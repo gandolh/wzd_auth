@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+# Exact-match `.env` is not enough: `.env.local` / `.env.production` are a
+# reflex from every other framework in the estate, and one of them holding
+# WARD_ADMIN_PASSWORD is a plaintext credential in git history.
+.env
+.env.*
+!.env.example
+
+# SQLite database + WAL/SHM sidecars.
+# The sidecars are NOT disposable while the process is running — an unclean
+# stop leaves committed data in the -wal. See the checkpoint-on-close note in
+# api/src/index.ts; back up all three together, never *.db alone.
+*.db
+*.db-wal
+*.db-shm
+
+# Ward's Ed25519 signing key (WARD_SIGNING_KEY_PATH; .env.example points at
+# api/data/signing-key.pem, inside the repo tree). This is the one private key
+# in the estate — every access token for all six apps is signed with it, so a
+# single `git add -A` committing it means rotating estate-wide AND scrubbing
+# history. Ignored by extension and by directory, deliberately belt-and-braces.
+*.pem
+*.key
+api/data/
+
+# Logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+
+# Test coverage
+coverage/

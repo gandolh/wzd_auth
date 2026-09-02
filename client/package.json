@@ -1,0 +1,6 @@
+{
+  "name": "@ward/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ward client package for consuming apps — scaffold only, built out in a later brief."
+}
