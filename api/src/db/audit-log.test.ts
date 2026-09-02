@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { freshDb, seedApps, seedUser } from "./test-support.js";
 import { SUPERUSER_ACTOR, grantRole } from "./grants.js";
-import { SUPERUSER_LABEL, countAudit, grantTargetId, listAudit, recordAudit } from "./audit-log.js";
+import {
+  SUPERUSER_LABEL,
+  countAudit,
+  grantTargetId,
+  listAudit,
+  parseGrantTargetId,
+  recordAudit,
+} from "./audit-log.js";
 
 let db: Database.Database;
 
@@ -127,6 +134,92 @@ describe("audit_log answers 'who granted this and when'", () => {
     });
 
     expect(listAudit(db)[0]!.action).toBe("an.action.nobody.foresaw");
+  });
+});
+
+describe("grantTargetId identifies exactly one triple", () => {
+  /**
+   * The collision this encoding exists to prevent.
+   *
+   * Role strings are opaque and unrestricted — `grants.test.ts` deliberately
+   * grants one containing `:`, and `apps.slug` has no CHECK forbidding one
+   * either — so joining the triple on a bare `:` made
+   * `(s, "atrium", "a:b")` and `(s, "atrium:a", "b")` the same string.
+   * `AuditQuery.targetId` is an equality filter and it is how the console
+   * answers "everything that happened to this grant", so that collision broke
+   * the one job `audit_log` exists to do.
+   */
+  it("does not collide when a component contains the delimiter", () => {
+    const subject = "e5b0c44298fc1c149afbf4c8996fb924";
+
+    const a = grantTargetId(subject, "atrium", "a:b");
+    const b = grantTargetId(subject, "atrium:a", "b");
+
+    expect(a).not.toBe(b);
+    expect(parseGrantTargetId(a)).toEqual({ subject, appSlug: "atrium", role: "a:b" });
+    expect(parseGrantTargetId(b)).toEqual({ subject, appSlug: "atrium:a", role: "b" });
+  });
+
+  it("round-trips arbitrary component strings", () => {
+    const nasty = [
+      "a:b",
+      "100%",
+      "%3A",
+      "with spaces",
+      "",
+      "rôle-ăî-日本語",
+      "some.app/role:with-punctuation and spaces",
+      ":::",
+      "%zz",
+    ];
+
+    const seen = new Set<string>();
+    for (const subject of nasty) {
+      for (const appSlug of nasty) {
+        for (const role of nasty) {
+          const id = grantTargetId(subject, appSlug, role);
+          expect(parseGrantTargetId(id)).toEqual({ subject, appSlug, role });
+          // Distinct triples, distinct ids — the property that failed before.
+          expect(seen.has(id)).toBe(false);
+          seen.add(id);
+        }
+      }
+    }
+    expect(seen.size).toBe(nasty.length ** 3);
+  });
+
+  it("stays the console's equality filter, colons and all", () => {
+    const owner = seedUser(db, "cristian");
+    const role = "a:b";
+    const targetId = grantTargetId(owner.subject, "atrium", role);
+
+    recordAudit(db, {
+      actorKind: "superuser",
+      actorLabel: SUPERUSER_LABEL,
+      action: "grant.create",
+      targetKind: "grant",
+      targetId,
+    });
+    // The triple that used to encode identically, recorded as a separate event.
+    recordAudit(db, {
+      actorKind: "superuser",
+      actorLabel: SUPERUSER_LABEL,
+      action: "grant.revoke",
+      targetKind: "grant",
+      targetId: grantTargetId(owner.subject, "atrium:a", "b"),
+    });
+
+    const rows = listAudit(db, { targetKind: "grant", targetId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe("grant.create");
+  });
+
+  it("declines to decode something that is not a grant target id", () => {
+    expect(parseGrantTargetId("just-a-subject")).toBeUndefined();
+    expect(parseGrantTargetId("a:b:c:d")).toBeUndefined();
+    // A malformed percent escape: URIError, surfaced as `undefined` rather than
+    // thrown, because the console must render an unknown row without dying.
+    expect(parseGrantTargetId("a:%zz:c")).toBeUndefined();
   });
 });
 

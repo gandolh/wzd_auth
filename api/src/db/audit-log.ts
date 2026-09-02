@@ -50,7 +50,10 @@ export interface AuditLogRow {
   /** An opaque dotted verb — `grant.create`, `user.disable`, `session.revoke`. */
   action: string;
   target_kind: TargetKind | null;
-  /** A subject, a slug, or `subject:app:role` for a grant. Never a foreign key. */
+  /**
+   * A subject, a slug, or — for a grant — the triple as `grantTargetId` encodes
+   * it. Never a foreign key.
+   */
   target_id: string | null;
   /** JSON, or null. Whatever context the event needs, without a migration. */
   detail: string | null;
@@ -106,9 +109,60 @@ export function recordAudit(db: Database.Database, event: AuditEvent): AuditLogR
   )!;
 }
 
-/** The canonical `target_id` for a grant: the triple that identifies it. */
+/**
+ * The canonical `target_id` for a grant: the triple that identifies it, encoded
+ * so that **no two distinct triples can ever produce the same string**.
+ *
+ * It used to be a bare `` `${subject}:${appSlug}:${role}` ``, which collided.
+ * Role strings are explicitly opaque and unrestricted — `grants.test.ts`
+ * deliberately grants one containing `:`, and `apps.slug` has no CHECK
+ * forbidding one either — so `(subject, "atrium", "a:b")` and
+ * `(subject, "atrium:a", "b")` encoded identically. `AuditQuery.targetId` is an
+ * equality filter, and it is how the console answers "everything that happened
+ * to this grant", so a colon in a role silently broke the one job `audit_log`
+ * exists to do.
+ *
+ * The fix is the encoding, **not** a restriction on what a role may contain:
+ * role opacity is locked in `corpus/wiki/decisions-accounts.md`, and narrowing
+ * it here to make a delimiter safe would be solving the wrong problem.
+ *
+ * `encodeURIComponent` per component, joined on `:`. Percent-encoding escapes
+ * `:` (to `%3A`) and `%` itself (to `%25`), which is what makes the join
+ * unambiguous and the split exact; a JSON array would work equally well but
+ * this stays readable in a console table and greppable in a log. Round-trips
+ * through `parseGrantTargetId` for every possible component string, including
+ * empty ones.
+ */
 export function grantTargetId(subject: string, appSlug: string, role: string): string {
-  return `${subject}:${appSlug}:${role}`;
+  return [subject, appSlug, role].map(encodeURIComponent).join(":");
+}
+
+/** The three components of a grant `target_id`, decoded. */
+export interface GrantTarget {
+  subject: string;
+  appSlug: string;
+  role: string;
+}
+
+/**
+ * The inverse of `grantTargetId`. `undefined` when the string is not one —
+ * wrong number of components, or an invalid percent escape.
+ *
+ * It returns rather than throws because the caller is the console rendering a
+ * row someone else wrote: `target_id` is a free-text column with no CHECK, and
+ * an old or hand-inserted value should render as opaque rather than take the
+ * page down.
+ */
+export function parseGrantTargetId(targetId: string): GrantTarget | undefined {
+  const parts = targetId.split(":");
+  if (parts.length !== 3) return undefined;
+  try {
+    const [subject, appSlug, role] = parts.map(decodeURIComponent) as [string, string, string];
+    return { subject, appSlug, role };
+  } catch {
+    // decodeURIComponent throws URIError on a malformed escape such as "%zz".
+    return undefined;
+  }
 }
 
 /** Filters the console offers. Every field is optional; omitted means unfiltered. */

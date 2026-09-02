@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm, stat, writeFile, copyFile } from "node:fs/promises";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { chmod, mkdtemp, rm, stat, writeFile, copyFile } from "node:fs/promises";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,12 @@ import { SignJWT, decodeProtectedHeader } from "jose";
 import { ACCESS_TOKEN_ALG, ACCESS_TOKEN_AUDIENCE, ACCESS_TOKEN_TTL_SECONDS } from "./claims.js";
 import { loadKeySet, previousSigningKeyPath, SigningKeyError } from "./keys.js";
 import { signAccessToken } from "./mint.js";
-import { createJwksKeyStore, verifyAccessToken, AccessTokenVerificationError } from "./verify.js";
+import {
+  createJwksKeyStore,
+  jwksUrl,
+  verifyAccessToken,
+  AccessTokenVerificationError,
+} from "./verify.js";
 import { generateSigningKeyFile } from "./keygen.js";
 import type { WardKeySet } from "./keys.js";
 
@@ -315,6 +320,7 @@ describe("keygen", () => {
     const path = join(dir, "once.pem");
     const first = await generateSigningKeyFile(path);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(first.mode).toBe(0o600);
 
     // Silently replacing a live signing key signs out every account in the
     // estate. The refusal is the filesystem's, via O_EXCL, not a check.
@@ -323,5 +329,139 @@ describe("keygen", () => {
 
     const forced = await generateSigningKeyFile(path, { force: true });
     expect(forced.kid).not.toBe(first.kid);
+  });
+
+  // The case the test above cannot reach. `writeFile`'s `mode` applies only
+  // when the file is *created*, so `--force` used to write fresh private key
+  // bytes into whatever permissions the existing inode already had — and the
+  // banner printed `mode : 0600` regardless. The realistic sequence is a key
+  // restored from a backup or `cp`d in under umask 022 (0644), then a
+  // `keygen -- --force`: a 0644 private signing key, reported as hardened, with
+  // the loader indifferent to it. Any other local account could then mint
+  // EdDSA tokens for any subject that all six verifiers accept.
+  it("restores 0600 on a forced overwrite of a loose file, and reports what it observes", async () => {
+    const path = join(dir, "loosened.pem");
+    await generateSigningKeyFile(path);
+
+    await chmod(path, 0o666);
+    expect((await stat(path)).mode & 0o777).toBe(0o666);
+
+    const forced = await generateSigningKeyFile(path, { force: true });
+
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    // Reported from `stat`, not from a constant — that is what makes the banner
+    // evidence rather than reassurance.
+    expect(forced.mode).toBe(0o600);
+  });
+});
+
+describe("the loader is not indifferent to key permissions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("warns at boot on a key any other account can read, and still boots", async () => {
+    // Warn rather than refuse: refusing to start on a permission bit turns a
+    // hardening check into an outage, and the operator may be mid-recovery.
+    const path = join(dir, "world-readable.pem");
+    const { kid } = await generateSigningKeyFile(path);
+    await chmod(path, 0o666);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loaded = await loadKeySet(path);
+
+    expect(loaded.current.kid).toBe(kid);
+    const messages = warn.mock.calls.map((call) => String(call[0]));
+    expect(messages).toHaveLength(1);
+    // The message has to name the file, the mode seen, and the fix — a warning
+    // an operator cannot act on from the line itself is one they scroll past.
+    expect(messages[0]).toContain(path);
+    expect(messages[0]).toContain("0666");
+    expect(messages[0]).toContain(`chmod 600 ${path}`);
+  });
+
+  it("says nothing about an owner-only key", async () => {
+    const path = join(dir, "tight.pem");
+    await generateSigningKeyFile(path);
+    await chmod(path, 0o400);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await loadKeySet(path);
+
+    // `mode & 0o077` is the test, not `mode !== 0o600`: 0400 and 0700 are fine,
+    // and a check that cried wolf on them would be turned off.
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("the previous-key slot is trust granted by a filename", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("warns, naming the kid, whenever a second key is being trusted", async () => {
+    // Nothing checks that the key at `<key>.previous.pem` was ever a Ward key,
+    // and nothing expires the slot — so an unrelated Ed25519 key dropped there
+    // mints tokens the whole estate accepts. Note the asymmetry: filling the
+    // slot needs only *write* access to the key directory, while abusing the
+    // current key needs *read* access to a 0600 file. Hence a warn, on every
+    // restart, so the state cannot persist unnoticed.
+    const current = join(dir, "rotating.pem");
+    await generateSigningKeyFile(current);
+    const previous = previousSigningKeyPath(current);
+    await copyFile(join(dir, "a.pem"), previous);
+    // Explicit, so the assertion below counts the previous-key warning only and
+    // not a permissions one about however `copyFile` left the mode.
+    await chmod(previous, 0o600);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rotating = await loadKeySet(current);
+
+    expect(rotating.previous?.kid).toBe(keySetA.current.kid);
+    const messages = warn.mock.calls.map((call) => String(call[0]));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain(keySetA.current.kid);
+    expect(messages[0]).toContain(previous);
+    // The lifecycle, in the line itself: 15 minutes, then empty the slot.
+    expect(messages[0]).toContain(`${ACCESS_TOKEN_TTL_SECONDS / 60} minutes`);
+    expect(messages[0]).toMatch(/rm /);
+
+    await rm(previous);
+  });
+
+  it("says nothing in the ordinary one-key steady state", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loaded = await loadKeySet(join(dir, "a.pem"));
+
+    expect(loaded.previous).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("jwksUrl", () => {
+  // The default used to be `""`, which resolves to a path nothing serves: Caddy
+  // reverse-proxies Ward under `/ward-api/*`. Brief 08's `@ward/client` builds
+  // every app's remote key store with this helper, so the default would have
+  // had all six apps fetch a 404 and reject every token — an estate-wide
+  // lockout on the deploy that shipped the client. It is required now, so the
+  // mistake is a compile error at the call site instead.
+  it("builds the URL Ward actually serves, given this estate's base path", () => {
+    expect(jwksUrl("https://gandolh.ro", "/ward-api").toString()).toBe(
+      "https://gandolh.ro/ward-api/.well-known/jwks.json",
+    );
+    expect(jwksUrl("https://gandolh.ro", "/ward-api/").toString()).toBe(
+      "https://gandolh.ro/ward-api/.well-known/jwks.json",
+    );
+    // A Ward at the root of its origin has to say so explicitly.
+    expect(jwksUrl("https://gandolh.ro", "").toString()).toBe(
+      "https://gandolh.ro/.well-known/jwks.json",
+    );
+  });
+
+  it("has no default base path — omitting it is a compile error", () => {
+    // @ts-expect-error apiBasePath is required; the old `= ""` default resolved to a 404.
+    // There is no runtime fallback either — the call throws rather than quietly
+    // building a URL nothing serves.
+    expect(() => jwksUrl("https://gandolh.ro")).toThrow(TypeError);
   });
 });

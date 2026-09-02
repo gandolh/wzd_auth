@@ -67,20 +67,68 @@ export function createRemoteJwksKeyStore(
   });
 }
 
-/** Where Ward publishes its keys, given the estate's public origin and Ward's API base path. */
-export function jwksUrl(publicOrigin: string, apiBasePath = ""): URL {
+/**
+ * Where Ward publishes its keys, given the estate's public origin and Ward's
+ * API base path.
+ *
+ *     jwksUrl("https://gandolh.ro", "/ward-api")
+ *     // → https://gandolh.ro/ward-api/.well-known/jwks.json
+ *
+ * **`apiBasePath` is required, and has no default.** It used to default to `""`,
+ * which produced `https://gandolh.ro/.well-known/jwks.json` — a path nothing
+ * serves, because Caddy reverse-proxies Ward under `/ward-api/*`. Brief 08's
+ * `@ward/client` uses this helper to build every app's remote key store, so the
+ * default would have had all six apps fetch a 404, `jose` throw, and every
+ * token be rejected: an estate-wide lockout on the deploy that shipped the
+ * client. It fails closed, so it was availability rather than a bypass — but a
+ * wrong default in a module six repositories copy is a bug waiting for a
+ * deploy.
+ *
+ * Required rather than defaulted to `/ward-api`, because the mistake is then a
+ * compile error at the call site instead of a 404 in production, and because
+ * this module is deliberately ignorant of Ward's own configuration (it is the
+ * one file brief 08 lifts unchanged) — baking this estate's deploy path into it
+ * as a default is exactly the knowledge it is not supposed to hold. Pass `""`
+ * explicitly for a Ward served at the root of its origin.
+ */
+export function jwksUrl(publicOrigin: string, apiBasePath: string): URL {
   return new URL(`${apiBasePath.replace(/\/+$/, "")}/.well-known/jwks.json`, publicOrigin);
 }
 
-/** Options for `verifyAccessToken`. `issuer` is required — an unpinned `iss` verifies nothing useful. */
+/**
+ * Options for `verifyAccessToken`. `issuer` is required — an unpinned `iss`
+ * verifies nothing useful.
+ *
+ * **Every field here except `issuer` weakens verification if it is got wrong,
+ * so none of them is reachable from Ward's own entry point.**
+ * `service.verifyWardAccessToken` takes a token and nothing else: it pins the
+ * issuer from configuration and exposes no options parameter at all, which is
+ * what keeps `audience`, `clockToleranceSeconds` and `currentDate` out of
+ * production call sites structurally rather than by convention. This type is
+ * the lower-level, fully-explicit surface — the one the tests drive and the one
+ * brief 08 lifts into `@ward/client`, where the consuming app supplies the
+ * issuer itself.
+ */
 export interface VerifyAccessTokenOptions {
   /** Expected `iss`: `WARD_PUBLIC_ORIGIN`, exactly, with no trailing slash. */
   issuer: string;
   /** Expected `aud`. Defaults to `ACCESS_TOKEN_AUDIENCE`. */
   audience?: string;
-  /** Clock skew allowance in seconds. Defaults to `ACCESS_TOKEN_CLOCK_TOLERANCE_SECONDS`. */
+  /**
+   * Clock skew allowance in seconds. Defaults to
+   * `ACCESS_TOKEN_CLOCK_TOLERANCE_SECONDS` (5).
+   *
+   * `jose` applies it as `exp <= now - tolerance`, so this is an unbounded
+   * lifetime extension and not a nicety: a day here is a day of extra life for
+   * every stolen token. Leave it alone unless you have measured a real skew.
+   */
   clockToleranceSeconds?: number;
-  /** The moment to compare `exp`/`iat` against. Tests use it; nothing else should. */
+  /**
+   * The moment to compare `exp`/`iat` against. **Tests only** — and unlike the
+   * comment that used to sit here, that is now enforced by reachability rather
+   * than asserted: no production entry point can set it, because
+   * `verifyWardAccessToken` has no options parameter to set it through.
+   */
   currentDate?: Date;
 }
 

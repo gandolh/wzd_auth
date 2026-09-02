@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 import { calculateJwkThumbprint } from "jose";
 import type { JSONWebKeySet, JWK } from "jose";
-import { ACCESS_TOKEN_ALG, SIGNING_KEY_CURVE } from "./claims.js";
+import { ACCESS_TOKEN_ALG, ACCESS_TOKEN_TTL_SECONDS, SIGNING_KEY_CURVE } from "./claims.js";
 
 /**
  * Loading Ward's Ed25519 signing keys off disk, and deriving the public JWKS
@@ -66,8 +66,33 @@ import { ACCESS_TOKEN_ALG, SIGNING_KEY_CURVE } from "./claims.js";
  *    one key.
  *
  * Dropping the previous key earlier than step 4's window is the mistake that
- * signs people out; leaving it in place indefinitely is merely untidy, and is
- * the safe direction to err in.
+ * signs people out; leaving it in place indefinitely is **not** merely untidy —
+ * see `loadKeySet`, which now says so at `warn`. It means permanently trusting
+ * two keys, and the second one is trusted purely because of where its filename
+ * is.
+ *
+ * ## Two things this module warns about and does not refuse
+ *
+ * Neither is a reason to keep Ward down, so both are `console.warn` rather than
+ * a thrown `SigningKeyError` — an operator who is mid-recovery needs the
+ * service back more than they need a lecture, and a hardening check that turns
+ * into an outage gets deleted by the next person. There is deliberately no
+ * Fastify logger plumbed in here: `keys.ts` is loaded before the app exists and
+ * takes nothing but a path.
+ *
+ *  1. **Key file permissions.** Loading used to be entirely indifferent to
+ *     them: a world-readable or world-writable signing key booted normally and
+ *     silently. The only permission-aware path was the `EACCES` branch in
+ *     `readKeyFile`, which fires when the mode is too *tight* and never when it
+ *     is too loose — so `scp`, `tar -x` without `-p`, or a `cp` under umask 022
+ *     left the estate's signing key at 0644 and nothing anywhere mentioned it.
+ *     Boot is the one moment the check is free.
+ *  2. **A populated previous-key slot.** Any Ed25519 private key that appears
+ *     at `<signing-key>.previous.pem` is published in the JWKS and accepted by
+ *     every verifier in the estate. Note the asymmetry that makes it worth a
+ *     `warn`: filling that slot needs only **write** access to the key
+ *     directory, whereas abusing the current key needs **read** access to a
+ *     0600 file.
  */
 
 /** Thrown for every failure in this module. Its message is written to be read by an operator. */
@@ -252,6 +277,37 @@ async function readKeyFile(path: string, label: string): Promise<string> {
 }
 
 /**
+ * Warn — loudly, and once per load — if a key file is reachable by anyone but
+ * its owner.
+ *
+ * `mode & 0o077` is the test rather than `mode !== 0o600`: the group and other
+ * bits are the dangerous ones, and an owner-only 0400 or 0700 is fine. The
+ * message names the file, the mode observed and the command that fixes it,
+ * because a warning an operator cannot act on from the line itself is a warning
+ * they scroll past.
+ *
+ * A `stat` failure is swallowed: this is advisory, and every way the file can
+ * genuinely be unusable already produces a `SigningKeyError` from the read.
+ */
+async function warnIfKeyFileIsTooOpen(path: string, label: string): Promise<void> {
+  let mode: number;
+  try {
+    mode = (await stat(path)).mode & 0o777;
+  } catch {
+    return;
+  }
+  if ((mode & 0o077) === 0) return;
+
+  const octal = `0${mode.toString(8).padStart(3, "0")}`;
+  console.warn(
+    `WARNING: ${label} at ${path} is mode ${octal} — it is readable and/or writable by ` +
+      `accounts other than the one Ward runs as. Anyone who can read it can mint access ` +
+      `tokens for any subject in the estate, indistinguishable from Ward's own. Fix it with: ` +
+      `chmod 600 ${path}`,
+  );
+}
+
+/**
  * Load the key set from disk. Pure with respect to Ward's configuration — it
  * takes the path, so tests and `keygen` can drive it without importing
  * `config.js` and triggering its `process.exit`.
@@ -266,7 +322,29 @@ export async function loadKeySet(currentPath: string): Promise<WardKeySet> {
     currentPath,
     "Ward's signing key",
   );
+  // After the parse, not before: a file that is not a key at all gets the
+  // specific error it deserves rather than a permissions aside on top of it.
+  await warnIfKeyFileIsTooOpen(currentPath, "Ward's signing key");
 
+  // The previous-key slot. **Its lifecycle, precisely:**
+  //
+  //  - It is *empty* in the steady state. Ward publishes exactly one key.
+  //  - It is *filled* only by step 1 of the rotation procedure at the top of
+  //    this file (`mv signing-key.pem signing-key.previous.pem`), and while it
+  //    is filled the JWKS publishes two keys and both verify.
+  //  - It becomes **safe to delete once one access-token lifetime — 15 minutes,
+  //    `ACCESS_TOKEN_TTL_SECONDS` — has elapsed since the rotation**, because
+  //    after that no unexpired token anywhere was signed by the outgoing key.
+  //    In practice wait longer, since `@ward/client` caches the JWKS for its
+  //    own window.
+  //  - Leaving it populated indefinitely is **not** the tidy-later option it
+  //    looks like: it means Ward permanently trusts two signing keys, and the
+  //    second is trusted on the strength of a filename. Whatever Ed25519
+  //    private key sits at that path gets published and accepted — there is no
+  //    check that it was ever a Ward key, and there is deliberately no key
+  //    manifest to add one to (one owner, one box; a trust store here would be
+  //    ceremony, not security). What there is instead is the `warn` below, so
+  //    the state cannot persist unnoticed across restarts.
   const previousPath = previousSigningKeyPath(currentPath);
   let previous: WardSigningKey | undefined;
   try {
@@ -296,6 +374,19 @@ export async function loadKeySet(currentPath: string): Promise<WardKeySet> {
       `Ward's previous signing key at ${previousPath} is the same key as the current one ` +
         `(kid ${current.kid}). Publishing it twice would make every JWKS lookup ambiguous. ` +
         `Delete it, or complete the rotation with a genuinely new current key.`,
+    );
+  }
+
+  if (previous) {
+    await warnIfKeyFileIsTooOpen(previousPath, "Ward's previous signing key");
+    console.warn(
+      `WARNING: Ward is trusting a SECOND signing key from ${previousPath} (kid ` +
+        `${previous.kid}). It is published in the JWKS and every verifier in the estate ` +
+        `accepts tokens signed by it — a key is trusted here because of its filename and ` +
+        `nothing else. This is correct only during a rotation. Empty the slot once the ` +
+        `rotation is complete: ${ACCESS_TOKEN_TTL_SECONDS / 60} minutes after the switchover ` +
+        `no unexpired token was signed by it, so \`rm ${previousPath}\` and restart. Leaving ` +
+        `it in place means permanently trusting two keys.`,
     );
   }
 

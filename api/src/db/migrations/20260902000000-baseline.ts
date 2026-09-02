@@ -179,13 +179,21 @@ export function up(db: Database.Database): void {
   // the sentinel `'superuser'` when the console did. `audit_log` carries the
   // full story; this column exists so the answer to "who granted this and when"
   // survives even if the log is ever pruned.
+  //
+  // It is **NOT NULL**, and that is the whole reason it exists: a NULL here is
+  // a grant that answers "who granted this" with a shrug, which defeats the
+  // sentence above it. There is always an answer — a subject when an account
+  // issued it, and the `'superuser'` sentinel for the break-glass case, which
+  // is exactly what that sentinel is for. Enforced in the schema rather than in
+  // `../grants.ts` because a caller that forgets should fail, and a guard in
+  // application code is a guard the next caller can skip.
   db.exec(`
     CREATE TABLE grants (
       subject    TEXT NOT NULL REFERENCES users (subject) ON DELETE CASCADE,
       app_slug   TEXT NOT NULL REFERENCES apps (slug) ON DELETE CASCADE,
       role       TEXT NOT NULL,
       granted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      granted_by TEXT,
+      granted_by TEXT NOT NULL,
 
       PRIMARY KEY (subject, app_slug, role),
       CHECK (role <> '')

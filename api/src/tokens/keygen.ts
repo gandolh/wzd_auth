@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadKeySet, previousSigningKeyPath, SigningKeyError } from "./keys.js";
@@ -39,6 +39,12 @@ export interface GenerateSigningKeyResult {
   path: string;
   /** RFC 7638 thumbprint of the new key — the `kid` that will appear in the JWKS. */
   kid: string;
+  /**
+   * The permission bits `stat` reports **after** writing — the ones actually on
+   * the inode, not the ones that were asked for. Should be `0o600`; anything
+   * else is a fact the operator has to be told rather than one to smooth over.
+   */
+  mode: number;
 }
 
 /**
@@ -47,6 +53,19 @@ export interface GenerateSigningKeyResult {
  * Created with `wx` unless `force`, so refusing to overwrite is the filesystem's
  * atomic guarantee rather than a check-then-write race. Mode 0600 from the
  * moment the file exists: it is never briefly world-readable.
+ *
+ * **`writeFile`'s `mode` applies only when the file is created**, which made
+ * `--force` unable to tighten anything: a forced overwrite dropped fresh
+ * private key bytes into whatever permissions the existing file already had,
+ * and the CLI printed `0600` regardless. The realistic sequence is an operator
+ * restoring the key from a backup or a `cp` under umask 022 — 0644 — and then
+ * running `npm run keygen -- --force`; the loader never checked either, so
+ * every other local account on the box could read Ward's signing key and mint
+ * EdDSA tokens for any subject that all six verifiers would accept. So the
+ * mode is set **explicitly after the write, on both paths**, and then read back
+ * off the inode so the caller reports what is true rather than what was
+ * intended. (`keys.loadKeySet` now also warns at boot on a key that is group-
+ * or world-accessible, which is the other half of the same hole.)
  */
 export async function generateSigningKeyFile(
   path: string,
@@ -74,11 +93,30 @@ export async function generateSigningKeyFile(
     throw new SigningKeyError(`could not write a signing key to ${path}.`, { cause });
   }
 
+  // Not conditional on `force`: on the create path it is a no-op, and on the
+  // overwrite path it is the only thing that tightens an inode that already
+  // existed. Cheap either way, and it removes the branch that was the bug.
+  try {
+    await chmod(path, 0o600);
+  } catch (cause) {
+    throw new SigningKeyError(
+      `wrote a signing key to ${path} but could not set its permissions to 0600. ` +
+        `Fix it by hand before starting Ward: chmod 600 ${path}`,
+      { cause },
+    );
+  }
+
   // Read it back through the ordinary loader. If the file Ward is about to
   // depend on cannot be loaded by the code that will load it, the operator
   // should find out now and not at the next restart.
   const keySet = await loadKeySet(path);
-  return { path, kid: keySet.current.kid };
+  const mode = (await stat(path)).mode & 0o777;
+  return { path, kid: keySet.current.kid, mode };
+}
+
+/** `0600`, for a banner. */
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, "0")}`;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -96,12 +134,23 @@ async function main(argv: string[]): Promise<number> {
   }
 
   try {
-    const { kid } = await generateSigningKeyFile(path, { force });
+    const { kid, mode } = await generateSigningKeyFile(path, { force });
+    // The observed mode, never a constant. Printing `0600` unconditionally is
+    // what let a 0644 key look hardened.
+    const modeWarning =
+      mode === 0o600
+        ? ""
+        : `\n  !! WARNING: the key file is mode ${formatMode(mode)}, NOT 0600.\n` +
+          `  !! Ward's private signing key is readable or writable by another account\n` +
+          `  !! on this machine, which is enough to mint tokens for any subject.\n` +
+          `  !! Fix it now:  chmod 600 ${path}\n`;
     process.stdout.write(
       `\nWard signing key written.\n\n` +
         `  path : ${path}\n` +
         `  kid  : ${kid}\n` +
-        `  mode : 0600\n\n` +
+        `  mode : ${formatMode(mode)}\n` +
+        modeWarning +
+        `\n` +
         `This is the estate's ONLY signing key. Every access token for every app is\n` +
         `signed with it, and the public half is served at /.well-known/jwks.json.\n\n` +
         `  * It is gitignored (*.pem, *.key, api/data/) and must stay that way.\n` +

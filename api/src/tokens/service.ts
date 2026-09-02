@@ -1,12 +1,7 @@
 import type { JSONWebKeySet } from "jose";
 import { loadKeySet, type WardKeySet } from "./keys.js";
 import { signAccessToken, type MintedAccessToken } from "./mint.js";
-import {
-  createJwksKeyStore,
-  verifyAccessToken,
-  type WardKeyStore,
-  type VerifyAccessTokenOptions,
-} from "./verify.js";
+import { createJwksKeyStore, verifyAccessToken, type WardKeyStore } from "./verify.js";
 import type { AccessTokenClaims } from "./claims.js";
 
 /**
@@ -82,14 +77,47 @@ export async function mintAccessToken(subject: string): Promise<MintedAccessToke
  * Remember what this does not answer: the signature stays good for the full 15
  * minutes after the session was revoked. Liveness is a database read, and it is
  * introspection's other half.
+ *
+ * ## Why this takes a token and nothing else
+ *
+ * **A token is the only input, on purpose.** Every claim check is pinned here
+ * and none of them is expressible by a caller. That is structural rather than
+ * conventional, and the difference is the whole point: an earlier version took
+ * a `Partial<VerifyAccessTokenOptions>` and spread it *after* the pinned
+ * issuer, so any call site could — and would still type-check —
+ *
+ *  - extend a token's life without bound (`clockToleranceSeconds`, which `jose`
+ *    applies as `exp <= now - tolerance`, so one `86_400` written while chasing
+ *    imagined clock skew makes every expired token in the estate introspect as
+ *    authentic),
+ *  - accept any issuer at all (`issuer: undefined` — `requiredClaims` forces
+ *    only *presence*, and `jose` gates the value check on the option being
+ *    defined),
+ *  - accept any audience (`audience`),
+ *  - or backdate the clock (`currentDate`).
+ *
+ * Reordering the spread was rejected as the fix. A reorder still type-checks
+ * every one of those fields, so it survives exactly until the next refactor.
+ *
+ * `clockToleranceSeconds` was **removed from this surface entirely** rather than
+ * clamped to a ceiling. A clamp is a second number to justify, and there is
+ * nothing to justify it with: every verifier in the estate runs on the same box
+ * as Ward, so the 5 seconds `claims.ts` already documents is the answer, and a
+ * caller with a real skew problem has a clock to fix rather than a tolerance to
+ * widen. `currentDate` stays reachable on the lower-level `verifyAccessToken`,
+ * where the tests that need to move time live and where no production path
+ * goes.
+ *
+ * `algorithms` was already pinned inside `verifyAccessToken` and is untouched.
+ *
+ * Because there is no options parameter, extra arguments forced past the
+ * compiler (`as unknown as ...`) are not read at runtime either — the guarantee
+ * does not rest on the type checker alone, and `tokens.test.ts` asserts that.
  */
-export async function verifyWardAccessToken(
-  token: string,
-  overrides?: Partial<VerifyAccessTokenOptions>,
-): Promise<AccessTokenClaims> {
+export async function verifyWardAccessToken(token: string): Promise<AccessTokenClaims> {
   const [keySet, { WARD_PUBLIC_ORIGIN }] = await Promise.all([getKeySet(), import("../config.js")]);
   keyStore ??= createJwksKeyStore(keySet.jwks);
-  return verifyAccessToken(token, keyStore, { issuer: WARD_PUBLIC_ORIGIN, ...overrides });
+  return verifyAccessToken(token, keyStore, { issuer: WARD_PUBLIC_ORIGIN });
 }
 
 /**

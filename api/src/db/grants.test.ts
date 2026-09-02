@@ -31,9 +31,24 @@ describe("grants are a set of (subject, app, role)", () => {
   it("one person holds several roles in one app", () => {
     const alice = seedUser(db, "alice");
 
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "user" });
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "admin" });
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "moderator" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "admin",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "moderator",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(listRolesInApp(db, alice.subject, "prm")).toEqual(["admin", "moderator", "user"]);
     expect(hasGrant(db, alice.subject, "prm", "moderator")).toBe(true);
@@ -45,10 +60,20 @@ describe("grants are a set of (subject, app, role)", () => {
   // between a SELECT and an INSERT.
   it("rejects a duplicate triple in the database, not in application code", () => {
     const alice = seedUser(db, "alice");
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "admin" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "admin",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(() =>
-      grantRole(db, { subject: alice.subject, appSlug: "prm", role: "admin" }),
+      grantRole(db, {
+        subject: alice.subject,
+        appSlug: "prm",
+        role: "admin",
+        grantedBy: SUPERUSER_ACTOR,
+      }),
     ).toThrowError(/UNIQUE constraint failed: grants\.subject, grants\.app_slug, grants\.role/);
 
     expect(listRolesInApp(db, alice.subject, "prm")).toEqual(["admin"]);
@@ -56,11 +81,13 @@ describe("grants are a set of (subject, app, role)", () => {
 
   it("rejects the duplicate even on a raw INSERT that bypasses this module", () => {
     const alice = seedUser(db, "alice");
-    const insert = db.prepare("INSERT INTO grants (subject, app_slug, role) VALUES (?, ?, ?)");
+    const insert = db.prepare(
+      "INSERT INTO grants (subject, app_slug, role, granted_by) VALUES (?, ?, ?, ?)",
+    );
 
-    insert.run(alice.subject, "atrium", "user");
+    insert.run(alice.subject, "atrium", "user", SUPERUSER_ACTOR);
 
-    expect(() => insert.run(alice.subject, "atrium", "user")).toThrowError(
+    expect(() => insert.run(alice.subject, "atrium", "user", SUPERUSER_ACTOR)).toThrowError(
       /UNIQUE constraint failed/,
     );
   });
@@ -70,10 +97,25 @@ describe("grants are a set of (subject, app, role)", () => {
     const bob = seedUser(db, "bob");
 
     // Same subject + app, different role: allowed.
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: "user" });
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: "admin" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: "admin",
+      grantedBy: SUPERUSER_ACTOR,
+    });
     // Same app + role, different subject: allowed.
-    grantRole(db, { subject: bob.subject, appSlug: "atrium", role: "user" });
+    grantRole(db, {
+      subject: bob.subject,
+      appSlug: "atrium",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(listGrantsForApp(db, "atrium")).toHaveLength(3);
   });
@@ -81,9 +123,21 @@ describe("grants are a set of (subject, app, role)", () => {
   it("ensureGrant is idempotent where grantRole throws", () => {
     const alice = seedUser(db, "alice");
 
-    expect(ensureGrant(db, { subject: alice.subject, appSlug: "prm", role: "user" })).toBeDefined();
     expect(
-      ensureGrant(db, { subject: alice.subject, appSlug: "prm", role: "user" }),
+      ensureGrant(db, {
+        subject: alice.subject,
+        appSlug: "prm",
+        role: "user",
+        grantedBy: SUPERUSER_ACTOR,
+      }),
+    ).toBeDefined();
+    expect(
+      ensureGrant(db, {
+        subject: alice.subject,
+        appSlug: "prm",
+        role: "user",
+        grantedBy: SUPERUSER_ACTOR,
+      }),
     ).toBeUndefined();
 
     expect(listRolesInApp(db, alice.subject, "prm")).toEqual(["user"]);
@@ -93,7 +147,12 @@ describe("grants are a set of (subject, app, role)", () => {
     const alice = seedUser(db, "alice");
     const odd = "some.app/role:with-punctuation and spaces";
 
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: odd });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: odd,
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(hasGrant(db, alice.subject, "atrium", odd)).toBe(true);
   });
@@ -130,9 +189,24 @@ describe("grants are the security boundary", () => {
 
   it("groups grants by app for the introspection response", () => {
     const alice = seedUser(db, "alice");
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "user" });
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "admin" });
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: "user" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "admin",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(grantsBySlug(db, alice.subject)).toEqual({
       atrium: ["user"],
@@ -142,9 +216,24 @@ describe("grants are the security boundary", () => {
 
   it("revokes one role, one app, or everything", () => {
     const alice = seedUser(db, "alice");
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "user" });
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "admin" });
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: "user" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "admin",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     expect(revokeGrant(db, alice.subject, "prm", "admin")).toBe(true);
     expect(revokeGrant(db, alice.subject, "prm", "admin")).toBe(false);
@@ -160,8 +249,8 @@ describe("foreign keys actually enforce", () => {
   it("an orphan grant — unknown subject — is refused", () => {
     expect(() =>
       db
-        .prepare("INSERT INTO grants (subject, app_slug, role) VALUES (?, ?, ?)")
-        .run("nobody-has-this-subject", "atrium", "user"),
+        .prepare("INSERT INTO grants (subject, app_slug, role, granted_by) VALUES (?, ?, ?, ?)")
+        .run("nobody-has-this-subject", "atrium", "user", SUPERUSER_ACTOR),
     ).toThrowError(/FOREIGN KEY constraint failed/);
   });
 
@@ -169,13 +258,23 @@ describe("foreign keys actually enforce", () => {
     const alice = seedUser(db, "alice");
 
     expect(() =>
-      grantRole(db, { subject: alice.subject, appSlug: "not-an-app", role: "user" }),
+      grantRole(db, {
+        subject: alice.subject,
+        appSlug: "not-an-app",
+        role: "user",
+        grantedBy: SUPERUSER_ACTOR,
+      }),
     ).toThrowError(/FOREIGN KEY constraint failed/);
   });
 
   it("deleting an account takes its grants with it", () => {
     const alice = seedUser(db, "alice");
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "user" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     db.prepare("DELETE FROM users WHERE subject = ?").run(alice.subject);
 
@@ -184,8 +283,18 @@ describe("foreign keys actually enforce", () => {
 
   it("deleting an app takes everyone's access to it", () => {
     const alice = seedUser(db, "alice");
-    grantRole(db, { subject: alice.subject, appSlug: "prm", role: "user" });
-    grantRole(db, { subject: alice.subject, appSlug: "atrium", role: "user" });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "prm",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
+    grantRole(db, {
+      subject: alice.subject,
+      appSlug: "atrium",
+      role: "user",
+      grantedBy: SUPERUSER_ACTOR,
+    });
 
     db.prepare("DELETE FROM apps WHERE slug = ?").run("prm");
 
@@ -210,6 +319,31 @@ describe("foreign keys actually enforce", () => {
         .pluck()
         .get(),
     ).toBe(0);
+  });
+
+  // No foreign key does not mean no constraint. The column exists so that "who
+  // granted this and when" survives even a pruned audit log, and a NULL answers
+  // that question with nothing — so it is the *schema* that refuses, not
+  // `grants.ts`. `NewGrant.grantedBy` being required is the compile-time half
+  // of the same rule; this is the half a raw INSERT cannot get around.
+  it("the schema itself refuses a NULL granted_by", () => {
+    const alice = seedUser(db, "alice");
+
+    expect(() =>
+      db
+        .prepare("INSERT INTO grants (subject, app_slug, role, granted_by) VALUES (?, ?, ?, ?)")
+        .run(alice.subject, "atrium", "user", null),
+    ).toThrowError(/NOT NULL constraint failed: grants\.granted_by/);
+
+    // And omitting the column entirely is the same refusal — there is no
+    // default to fall back to, deliberately.
+    expect(() =>
+      db
+        .prepare("INSERT INTO grants (subject, app_slug, role) VALUES (?, ?, ?)")
+        .run(alice.subject, "atrium", "user"),
+    ).toThrowError(/NOT NULL constraint failed: grants\.granted_by/);
+
+    expect(listGrantsForApp(db, "atrium")).toEqual([]);
   });
 });
 

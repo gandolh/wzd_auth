@@ -29,9 +29,11 @@ export interface GrantRow {
   /**
    * A subject, or the sentinel `"superuser"`. **No foreign key**: the identity
    * that issues the estate's first grants is the break-glass superuser, which
-   * has no `users` row to point at.
+   * has no `users` row to point at. **Never null** — the column is `NOT NULL`,
+   * because a grant that cannot say who issued it does not answer the one
+   * question it is stored to answer.
    */
-  granted_by: string | null;
+  granted_by: string;
 }
 
 /**
@@ -50,18 +52,26 @@ export interface NewGrant {
   subject: string;
   appSlug: string;
   role: string;
-  /** A subject, or `SUPERUSER_ACTOR`. */
-  grantedBy?: string | null;
+  /**
+   * A subject, or `SUPERUSER_ACTOR`. **Required**, and deliberately not
+   * defaulted or nullable: the caller is the only thing that knows who is
+   * issuing this grant, and the column exists so that "who granted this and
+   * when" survives even a pruned audit log. `grantedBy` used to be optional and
+   * written as `?? null`, so the ordinary way to call this produced exactly the
+   * row the schema comment promised could not exist. Break-glass callers pass
+   * `SUPERUSER_ACTOR`; brief 05 passes the acting account's subject.
+   */
+  grantedBy: string;
 }
 
 const stmts = prepareOnce((db: Database.Database) => ({
-  insert: db.prepare<[string, string, string, string | null], GrantRow>(
+  insert: db.prepare<[string, string, string, string], GrantRow>(
     `INSERT INTO grants (subject, app_slug, role, granted_by)
      VALUES (?, ?, ?, ?)
      RETURNING *`,
   ),
 
-  insertIfAbsent: db.prepare<[string, string, string, string | null], GrantRow>(
+  insertIfAbsent: db.prepare<[string, string, string, string], GrantRow>(
     `INSERT INTO grants (subject, app_slug, role, granted_by)
      VALUES (?, ?, ?, ?)
      ON CONFLICT (subject, app_slug, role) DO NOTHING
@@ -110,7 +120,7 @@ const stmts = prepareOnce((db: Database.Database) => ({
  * Use `ensureGrant` where "they already have it" is a success, not an error.
  */
 export function grantRole(db: Database.Database, input: NewGrant): GrantRow {
-  return stmts(db).insert.get(input.subject, input.appSlug, input.role, input.grantedBy ?? null)!;
+  return stmts(db).insert.get(input.subject, input.appSlug, input.role, input.grantedBy)!;
 }
 
 /**
@@ -126,12 +136,7 @@ export function grantRole(db: Database.Database, input: NewGrant): GrantRow {
  * where a duplicate means the operator is looking at a stale page.
  */
 export function ensureGrant(db: Database.Database, input: NewGrant): GrantRow | undefined {
-  return stmts(db).insertIfAbsent.get(
-    input.subject,
-    input.appSlug,
-    input.role,
-    input.grantedBy ?? null,
-  );
+  return stmts(db).insertIfAbsent.get(input.subject, input.appSlug, input.role, input.grantedBy);
 }
 
 /** Remove one role. False if they did not hold it. */
