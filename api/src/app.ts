@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { healthRoutes } from "./routes/health.js";
+import { jwksRoutes } from "./routes/jwks.js";
 
 /**
  * Construct and configure the Fastify instance — nothing more.
@@ -31,6 +32,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(healthRoutes);
+  await app.register(jwksRoutes);
 
   return app;
 }
