@@ -1,0 +1,126 @@
+import type Database from "better-sqlite3";
+import type { FastifyInstance } from "fastify";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+/**
+ * The `Secure` exception, asserted against real response headers.
+ *
+ * `WARD_PUBLIC_ORIGIN` here is `http://127.0.0.1:8792`, and this is a **separate
+ * test file on purpose**: `config.ts` resolves its constants once per module
+ * registry, and vitest gives each test file its own — so this is the only way
+ * to exercise a second origin without reaching into config's internals.
+ * `auth.test.ts` covers the ordinary `https` case, where both cookies carry
+ * `Secure`.
+ *
+ * Why the exception exists at all: a browser does not store a `Secure` cookie
+ * over `http://127.0.0.1`, so without it nobody could run the login flow
+ * locally without terminating TLS first — and the workaround people reach for
+ * instead is dropping `Secure` everywhere. The condition is `http:` **and**
+ * loopback, so plain HTTP on a real hostname — the genuinely dangerous case —
+ * still gets `Secure` and simply does not work, which is the correct direction
+ * to fail in. `auth/cookie.test.ts` asserts that boundary directly.
+ */
+
+const PASSWORD = "correct-horse-battery";
+
+let dir: string;
+let app: FastifyInstance;
+let db: Database.Database;
+
+function setCookieAttributes(header: string): { name: string; attributes: Set<string> } {
+  const parts = header.split(";").map((part) => part.trim());
+  const [pair, ...rest] = parts as [string, ...string[]];
+
+  return {
+    name: pair.slice(0, pair.indexOf("=")),
+    attributes: new Set(rest.map((part) => part.split("=")[0]!.toLowerCase())),
+  };
+}
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "ward-auth-loopback-"));
+
+  process.env["PORT"] = "8792";
+  process.env["HOST"] = "127.0.0.1";
+  process.env["WARD_DB_PATH"] = join(dir, "unused.db");
+  process.env["WARD_ADMIN_USERNAME"] = "test-superuser";
+  process.env["WARD_ADMIN_PASSWORD"] = "test-superuser-password";
+  process.env["WARD_SIGNING_KEY_PATH"] = join(dir, "signing-key.pem");
+  process.env["WARD_PUBLIC_ORIGIN"] = "http://127.0.0.1:8792";
+
+  const config = await import("../config.js");
+  const { generateSigningKeyFile } = await import("../tokens/keygen.js");
+  await generateSigningKeyFile(config.WARD_SIGNING_KEY_PATH);
+
+  const { freshDb } = await import("../db/test-support.js");
+  const { createUser } = await import("../db/users.js");
+  const { hashPassword } = await import("../auth/password.js");
+
+  db = freshDb();
+  createUser(db, { username: "alice", passwordHash: await hashPassword(PASSWORD) });
+
+  const { authRoutes } = await import("./auth.js");
+  const Fastify = (await import("fastify")).default;
+  app = Fastify({ logger: false });
+  await app.register(authRoutes, { db });
+  await app.ready();
+});
+
+afterAll(async () => {
+  await app?.close();
+  db?.close();
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe("plain HTTP on loopback", () => {
+  it("omits Secure on both cookies and keeps every other attribute", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/login",
+      headers: { "x-forwarded-for": "203.0.113.9" },
+      payload: { username: "alice", password: PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const raw = response.headers["set-cookie"];
+    const headers = Array.isArray(raw) ? raw : [String(raw)];
+    expect(headers).toHaveLength(2);
+
+    const byName = new Map(
+      headers.map((header) => {
+        const parsed = setCookieAttributes(header);
+        return [parsed.name, parsed.attributes] as const;
+      }),
+    );
+
+    for (const name of ["ward_session", "ward_refresh"]) {
+      const attributes = byName.get(name)!;
+      expect(attributes.has("secure")).toBe(false);
+      // Everything else is unconditional — `Secure` is the only attribute the
+      // origin decides.
+      expect(attributes.has("httponly")).toBe(true);
+      expect(attributes.has("samesite")).toBe(true);
+      expect(attributes.has("path")).toBe(true);
+      expect(attributes.has("max-age")).toBe(true);
+    }
+  });
+
+  it("clears cookies without Secure too, so the browser replaces rather than shadows", async () => {
+    const response = await app.inject({ method: "POST", url: "/logout" });
+
+    expect(response.statusCode).toBe(204);
+
+    const raw = response.headers["set-cookie"];
+    const headers = Array.isArray(raw) ? raw : [String(raw)];
+
+    for (const header of headers) {
+      // A cleared cookie whose `Secure` differs from the original's is a
+      // DIFFERENT cookie to the browser, and the original survives.
+      expect(setCookieAttributes(header).attributes.has("secure")).toBe(false);
+    }
+  });
+});
