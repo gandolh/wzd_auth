@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { healthRoutes } from "./routes/health.js";
 import { jwksRoutes } from "./routes/jwks.js";
+import { authRoutes } from "./routes/auth.js";
+import { consoleRoutes } from "./routes/console.js";
 
 /**
  * Construct and configure the Fastify instance — nothing more.
@@ -33,6 +35,17 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(healthRoutes);
   await app.register(jwksRoutes);
+  await app.register(authRoutes);
+  await app.register(consoleRoutes);
+
+  // Registration order carries no meaning — these plugins share no state and
+  // no route prefix, and each declares its own paths. It is alphabetical-ish by
+  // brief number only so a reader can find the brief that owns a route.
+  //
+  // Both `authRoutes` and `consoleRoutes` accept an options object with a `db`
+  // for tests; neither is given one here, so both resolve the process-wide
+  // handle lazily on first request rather than at registration. That is what
+  // keeps `buildApp()` callable with no database on disk.
 
   return app;
 }
