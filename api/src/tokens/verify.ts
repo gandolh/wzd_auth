@@ -182,7 +182,11 @@ export async function verifyAccessToken(
       // token that simply omits one a rejection rather than a token that never
       // expires. `typ` pins the header so a JWT of some other purpose — a
       // future signed email link, say — cannot be replayed as a session.
-      requiredClaims: ["sub", "jti", "iat", "exp", "iss", "aud"],
+      // `sid` is required, so a token minted before the claim existed does not
+      // verify. Nothing is deployed, so no such tokens exist in the wild, and
+      // requiring it means introspection never has to guess what an absent
+      // session id means.
+      requiredClaims: ["sub", "jti", "sid", "iat", "exp", "iss", "aud"],
       typ: "JWT",
     });
     payload = result.payload as Record<string, unknown>;
@@ -194,10 +198,11 @@ export async function verifyAccessToken(
   // narrows the types so callers get `AccessTokenClaims` rather than a bag of
   // `unknown`. `aud` can legitimately be an array in JOSE — Ward mints a single
   // string, and anything else is not a token Ward minted.
-  const { sub, jti, iat, exp, iss, aud } = payload;
+  const { sub, jti, sid, iat, exp, iss, aud } = payload;
   if (
     typeof sub !== "string" ||
     typeof jti !== "string" ||
+    typeof sid !== "string" ||
     typeof iat !== "number" ||
     typeof exp !== "number" ||
     typeof iss !== "string" ||
@@ -208,5 +213,5 @@ export async function verifyAccessToken(
     );
   }
 
-  return { sub, jti, iat, exp, iss, aud };
+  return { sub, jti, sid, iat, exp, iss, aud };
 }

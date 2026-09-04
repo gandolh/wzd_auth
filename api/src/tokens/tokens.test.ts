@@ -15,6 +15,7 @@ import {
   AccessTokenVerificationError,
 } from "./verify.js";
 import { generateSigningKeyFile } from "./keygen.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 import type { WardKeySet } from "./keys.js";
 
 /**
@@ -47,8 +48,8 @@ afterAll(async () => {
 });
 
 /** Mint a well-formed token with key A, the way `service.mintAccessToken` does. */
-async function mint(subject = "sub_01H8XABCDEF", now?: Date) {
-  return signAccessToken({ subject, signingKey: keySetA.current, issuer: ISSUER, now });
+async function mint(subject = "sub_01H8XABCDEF", now?: Date, sessionId = newFamilyId()) {
+  return signAccessToken({ subject, sessionId, signingKey: keySetA.current, issuer: ISSUER, now });
 }
 
 /** Compact-serialise an arbitrary header + payload with no signature at all. */
@@ -101,14 +102,16 @@ describe("minting", () => {
     expect(header.typ).toBe("JWT");
   });
 
-  it("carries the subject, jti, iss and aud — and nothing about authority", async () => {
-    const minted = await mint("sub_notarealsubject");
+  it("carries the subject, jti, sid, iss and aud — and nothing about authority", async () => {
+    const sessionId = newFamilyId();
+    const minted = await mint("sub_notarealsubject", undefined, sessionId);
     const claims = await verifyAccessToken(minted.token, createJwksKeyStore(keySetA.jwks), {
       issuer: ISSUER,
     });
     expect(claims).toEqual({
       sub: "sub_notarealsubject",
       jti: minted.jti,
+      sid: sessionId,
       iat: minted.issuedAt,
       exp: minted.expiresAt,
       iss: ISSUER,
@@ -123,7 +126,12 @@ describe("minting", () => {
 
   it("refuses to mint for an empty subject", async () => {
     await expect(
-      signAccessToken({ subject: "  ", signingKey: keySetA.current, issuer: ISSUER }),
+      signAccessToken({
+        subject: "  ",
+        sessionId: newFamilyId(),
+        signingKey: keySetA.current,
+        issuer: ISSUER,
+      }),
     ).rejects.toThrow(TypeError);
   });
 });
@@ -150,6 +158,7 @@ describe("verification", () => {
     // A verifier that resolved the key from the token itself would accept this.
     const forged = await signAccessToken({
       subject: "sub_01H8XABCDEF",
+      sessionId: newFamilyId(),
       signingKey: keySetB.current,
       issuer: ISSUER,
     });
@@ -206,6 +215,7 @@ describe("verification", () => {
   it("rejects a token whose iss is not this Ward", async () => {
     const minted = await signAccessToken({
       subject: "sub_01H8XABCDEF",
+      sessionId: newFamilyId(),
       signingKey: keySetA.current,
       issuer: "https://evil.example",
     });
@@ -217,6 +227,7 @@ describe("verification", () => {
   it("rejects a token minted for a different audience", async () => {
     const minted = await signAccessToken({
       subject: "sub_01H8XABCDEF",
+      sessionId: newFamilyId(),
       signingKey: keySetA.current,
       issuer: ISSUER,
       audience: "some-other-estate",
@@ -255,11 +266,13 @@ describe("key rotation", () => {
     const store = createJwksKeyStore(rotating.jwks);
     const oldToken = await signAccessToken({
       subject: "sub_still_valid",
+      sessionId: newFamilyId(),
       signingKey: keySetA.current,
       issuer: ISSUER,
     });
     const newToken = await signAccessToken({
       subject: "sub_fresh",
+      sessionId: newFamilyId(),
       signingKey: rotating.current,
       issuer: ISSUER,
     });

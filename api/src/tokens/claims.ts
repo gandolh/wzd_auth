@@ -92,6 +92,26 @@ export interface AccessTokenClaims {
   sub: string;
   /** Unique per token. The handle a revocation or an audit line refers to. */
   jti: string;
+  /**
+   * **Session identity** — the `family_id` of the refresh family this token was
+   * minted under. `sid` is the standard OIDC name for exactly this, which is
+   * why it is not something invented here.
+   *
+   * This is what lets introspection answer "has *this session* been revoked"
+   * rather than only "does this account have any live session at all". Without
+   * it, signing out one device leaves that device's access token introspecting
+   * as live for its full 15 minutes, because `jti` is never persisted and
+   * nothing else in the token names the family — which breaks the one feature
+   * the self-service decision in `wiki/decisions.md` exists for, "sign out my
+   * other devices".
+   *
+   * **This does not contradict the no-permissions-in-claims rule.** That rule
+   * exists because a token minted before a grant changed would carry *stale
+   * authority* for its whole lifetime. A session id cannot go stale that way:
+   * it names a row, and that row's liveness is looked up fresh on every
+   * introspection. It carries identity, not authority.
+   */
+  sid: string;
   /** Issued-at, seconds since the epoch. */
   iat: number;
   /** Expiry, seconds since the epoch. Always `iat + ACCESS_TOKEN_TTL_SECONDS`. */

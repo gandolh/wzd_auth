@@ -27,8 +27,9 @@ import {
   issueRefreshToken,
   refreshCookieMaxAge,
   rotateRefreshToken,
-  subjectForRefreshToken,
+  sessionForRefreshToken,
 } from "../auth/refresh.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 
 /**
  * `POST /login`, `POST /refresh`, `POST /logout` — the account session surface.
@@ -271,8 +272,16 @@ export async function authRoutes(
      * here leaves nothing behind at all: no row, no cookie, no session the
      * console would list.
      */
-    const access = await mintAccessToken(user.subject);
-    const issued = issueRefreshToken(db, user.subject);
+    /**
+     * The family id is generated here rather than inside `issueRefreshToken`,
+     * because the access token's `sid` claim has to carry it and the token is
+     * minted first (see above). `newFamilyId()` is pure — it allocates an id
+     * without touching the database — so a mint failure after this line still
+     * leaves nothing behind.
+     */
+    const familyId = newFamilyId();
+    const access = await mintAccessToken(user.subject, familyId);
+    const issued = issueRefreshToken(db, user.subject, { familyId });
 
     recordAudit(db, {
       actorKind: "account",
@@ -354,17 +363,24 @@ export async function authRoutes(
      * on the rare rotation that then fails.
      *
      * The subject is peeked off the row rather than taken from the outcome.
-     * `subjectForRefreshToken` is not an authorisation check and is not treated
+     * `sessionForRefreshToken` is not an authorisation check and is not treated
      * as one: `rotateRefreshToken` below still decides everything, and a token
      * whose hash is unknown is refused here without minting anything.
      */
-    const subject = subjectForRefreshToken(db, presented);
-    if (subject === undefined) {
+    const session = sessionForRefreshToken(db, presented);
+    if (session === undefined) {
       request.log.info({ outcome: "unknown" }, "refresh rejected");
       return refreshRejected(reply, secure);
     }
+    const subject = session.subject;
 
-    const access = await mintAccessToken(subject);
+    /**
+     * Rotation preserves `family_id`, so the successor's `sid` is the presented
+     * token's family. Minting with it before the rotation commits keeps the
+     * ordering that fixed the burnt-family seam, without the new token naming a
+     * family that does not exist yet.
+     */
+    const access = await mintAccessToken(subject, session.familyId);
     const outcome = rotateRefreshToken(db, presented, new Date(), { presentedBy: address });
 
     if (outcome.status !== "rotated") {

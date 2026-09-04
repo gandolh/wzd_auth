@@ -242,12 +242,19 @@ export async function introspectRoutes(
       if (token === undefined) return INACTIVE;
 
       let subject: string;
+      let sessionId: string;
       try {
         // Takes the token and nothing else — no options bag, so no call site
         // can weaken the issuer, audience, expiry or clock tolerance. Brief 02
         // narrowed it deliberately after review found all four overridable;
         // do not widen it.
-        subject = (await verifyWardAccessToken(token)).sub;
+        const claims = await verifyWardAccessToken(token);
+        subject = claims.sub;
+        // `sid` names the refresh family this token was minted under, which is
+        // what makes liveness a question about *this session* rather than about
+        // the account. `verify.ts` requires the claim, so it is present on any
+        // token that got this far.
+        sessionId = claims.sid;
       } catch (error) {
         /**
          * Only a verification failure means "not a live session". Anything else
@@ -271,7 +278,7 @@ export async function introspectRoutes(
 
       // One code path from here: liveness and authority are decided in
       // `grants/resolve.ts`, for every caller, on every call.
-      return resolveSession(await database(), subject);
+      return resolveSession(await database(), subject, sessionId);
     },
   );
 }

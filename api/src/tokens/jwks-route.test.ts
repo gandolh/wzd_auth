@@ -7,6 +7,7 @@ import type { JSONWebKeySet } from "jose";
 
 import { generateSigningKeyFile } from "./keygen.js";
 import { createJwksKeyStore, verifyAccessToken } from "./verify.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 
 /**
  * `GET /.well-known/jwks.json` through the real `buildApp()`, so the wiring is
@@ -88,7 +89,7 @@ describe("GET /.well-known/jwks.json", () => {
     // End to end: the service mints with the private half, the route publishes
     // the public half, and verification uses nothing but the served document.
     const { mintAccessToken } = await import("./service.js");
-    const minted = await mintAccessToken("sub_route_test");
+    const minted = await mintAccessToken("sub_route_test", newFamilyId());
 
     const response = await app.inject({ method: "GET", url: "/.well-known/jwks.json" });
     const store = createJwksKeyStore(JSON.parse(response.body) as JSONWebKeySet);

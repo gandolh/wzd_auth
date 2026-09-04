@@ -589,6 +589,35 @@ export function subjectForRefreshToken(
   return findRefreshToken(db, hashRefreshToken(presented))?.subject;
 }
 
+/** The account and the refresh family a presented token belongs to. */
+export interface PresentedSession {
+  subject: string;
+  familyId: string;
+}
+
+/**
+ * Peek at both the subject and the **family** behind a presented refresh token.
+ *
+ * `/refresh` mints the access token *before* rotating (so a mint failure leaves
+ * no spent row behind), which means it needs the `sid` before the rotation has
+ * told it anything. Rotation preserves `family_id` — that is what makes a family
+ * a family — so the presented token's family is the successor's family, and
+ * reading it here is sound rather than a guess.
+ *
+ * A **lookup, not an authorisation check.** It says nothing about whether the
+ * token is live, unexpired or unrevoked; `rotateRefreshToken` decides all of
+ * that and remains the only thing that may. Do not let a caller treat a result
+ * here as permission to proceed.
+ */
+export function sessionForRefreshToken(
+  db: Database.Database,
+  presented: string,
+): PresentedSession | undefined {
+  const row = findRefreshToken(db, hashRefreshToken(presented));
+  if (row === undefined) return undefined;
+  return { subject: row.subject, familyId: row.family_id };
+}
+
 /** The account behind a subject, or `undefined` if it cannot sign in. */
 export function usableAccount(db: Database.Database, subject: string): UserRow | undefined {
   const user = findUserBySubject(db, subject);

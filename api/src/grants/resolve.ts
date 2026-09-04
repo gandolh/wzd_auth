@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { grantsBySlug } from "../db/grants.js";
-import { listLiveTokensForSubject } from "../db/refresh-tokens.js";
+import { listFamily, listLiveTokensForSubject } from "../db/refresh-tokens.js";
 import { findUserBySubject } from "../db/users.js";
 
 /**
@@ -167,6 +167,53 @@ export function hasLiveSession(
 }
 
 /**
+ * Whether **one specific refresh family** still holds a live member.
+ *
+ * This is the check that makes per-device revocation real, and it is why the
+ * access token carries a `sid` claim. `hasLiveSession` above can only answer
+ * "does this account have *any* live session", so before `sid` existed, signing
+ * out one device left that device's access token introspecting as live for its
+ * full 15 minutes while a second device kept the account alive. That broke the
+ * one feature the self-service UI exists for — "sign out my other devices" —
+ * against an attacker who by hypothesis is actively using the token.
+ *
+ * A family contributes exactly one live row, because rotation revokes the
+ * predecessor as it issues the successor. So this is an indexed read over a
+ * handful of rows, and "no live member" means the family was logged out,
+ * swept by reuse detection, revoked by an admin, or has simply lapsed.
+ */
+export function hasLiveFamily(
+  db: Database.Database,
+  familyId: string,
+  subject: string,
+  now: string = new Date().toISOString(),
+): boolean {
+  // The predicate is deliberately identical to `listLiveTokensForSubject`'s
+  // (`revoked_at IS NULL AND expires_at > ?`) and does NOT also require
+  // `used_at IS NULL`. Rotation sets `used_at` and `revoked_at` together, so in
+  // normal operation the two agree — but "live" must mean one thing in this
+  // codebase, and a stricter check here could report a family dead while the
+  // account-scoped view reported it live. If that predicate ever changes, both
+  // change together.
+  /**
+   * **The family must belong to this subject.**
+   *
+   * At the one real call site the pairing is already trustworthy: Ward reads
+   * `sub` and `sid` off the *same* verified token, so mismatching them means
+   * forging a signature. But that safety lives in the caller, not here, and a
+   * later caller assembling the pair from two sources would get an unsound
+   * answer with no signal at all. Brief 09's "sign out my other devices" is
+   * exactly that shape — a subject from a session, a family id from a request.
+   *
+   * One comparison on rows already fetched makes this safe to hold wrong,
+   * rather than merely unlikely to be held wrong.
+   */
+  return listFamily(db, familyId).some(
+    (row) => row.subject === subject && row.revoked_at === null && row.expires_at > now,
+  );
+}
+
+/**
  * Resolve a verified subject into the introspection answer.
  *
  * The caller has already established authentication — a valid signature, a
@@ -189,6 +236,7 @@ export function hasLiveSession(
 export function resolveSession(
   db: Database.Database,
   subject: string,
+  sessionId: string,
   now: string = new Date().toISOString(),
 ): SessionResolution {
   const user = findUserBySubject(db, subject);
@@ -208,7 +256,19 @@ export function resolveSession(
    */
   if (user.disabled_at !== null) return INACTIVE;
 
-  if (!hasLiveSession(db, subject, now)) return INACTIVE;
+  /**
+   * **Liveness is scoped to this session, not to the account.**
+   *
+   * `sessionId` is the token's `sid` — the family it was minted under. Checking
+   * the family rather than the account is what lets one device be signed out
+   * while another stays live: the revoked device's token still verifies for the
+   * rest of its 15 minutes, and this is the line that stops it counting.
+   *
+   * The account-wide `hasLiveSession` is deliberately still exported for
+   * callers asking "is anybody signed in", but it must not be the introspection
+   * answer — it cannot tell one revoked family from a second live one.
+   */
+  if (!hasLiveFamily(db, sessionId, subject, now)) return INACTIVE;
 
   return {
     active: true,

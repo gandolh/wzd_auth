@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { generateSigningKeyFile } from "./keygen.js";
 import { signAccessToken } from "./mint.js";
 import { AccessTokenVerificationError } from "./verify.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 import type { AccessTokenClaims } from "./claims.js";
 import type { WardKeySet } from "./keys.js";
 
@@ -80,6 +81,7 @@ async function wardSigned(params: {
 }) {
   return signAccessToken({
     subject: params.subject ?? "sub_01H8XABCDEF",
+    sessionId: newFamilyId(),
     signingKey: keySet.current,
     issuer: params.issuer ?? ORIGIN,
     ...(params.audience === undefined ? {} : { audience: params.audience }),
@@ -90,7 +92,7 @@ async function wardSigned(params: {
 describe("verifyWardAccessToken pins every claim itself", () => {
   it("accepts a token Ward just minted", async () => {
     const { mintAccessToken } = await import("./service.js");
-    const minted = await mintAccessToken("sub_live");
+    const minted = await mintAccessToken("sub_live", newFamilyId());
 
     const claims = await verifyWardAccessToken(minted.token);
     expect(claims.sub).toBe("sub_live");
@@ -102,7 +104,7 @@ describe("verifyWardAccessToken pins every claim itself", () => {
     // directive becomes an unused-`@ts-expect-error` error and `npm run
     // typecheck` fails — which is the point: the hole cannot come back quietly.
     const { mintAccessToken } = await import("./service.js");
-    const minted = await mintAccessToken("sub_live");
+    const minted = await mintAccessToken("sub_live", newFamilyId());
     // @ts-expect-error verifyWardAccessToken takes a token and nothing else.
     const claims = await verifyWardAccessToken(minted.token, { clockToleranceSeconds: 5 });
     // And at runtime the extra argument is simply not read.

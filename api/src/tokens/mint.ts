@@ -35,6 +35,16 @@ export interface MintedAccessToken {
 export interface SignAccessTokenParams {
   /** The Subject: Ward's stable opaque account identifier. Not a username, not an app's row id. */
   subject: string;
+  /**
+   * The refresh family this token belongs to, minted into the `sid` claim.
+   *
+   * Required, deliberately. An optional one would let a call site mint a token
+   * that is silently unlinkable to any session, and introspection would then
+   * have to decide what an absent `sid` means — where the only safe answer is
+   * "not live", which turns a forgotten argument into an outage instead of a
+   * compile error.
+   */
+  sessionId: string;
   /** The key to sign with. Always the *current* key — see `service.ts`. */
   signingKey: WardSigningKey;
   /** `WARD_PUBLIC_ORIGIN`. Compared as an exact string by six verifiers. */
@@ -60,6 +70,14 @@ export async function signAccessToken(params: SignAccessTokenParams): Promise<Mi
   if (params.issuer.trim().length === 0) {
     throw new TypeError("signAccessToken: issuer must be a non-empty string");
   }
+  const sessionId = params.sessionId;
+  if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+    // A blank `sid` would verify and then name no family, so introspection
+    // could not tell this session from any other on the account — the exact
+    // hole `sid` exists to close. Refuse it here rather than mint a token that
+    // looks fine and is quietly unrevocable per-device.
+    throw new TypeError("signAccessToken: sessionId must be a non-empty string");
+  }
 
   const jti = randomUUID();
   // Seconds, floored — `exp` and `iat` are NumericDate, and a fractional value
@@ -67,7 +85,7 @@ export async function signAccessToken(params: SignAccessTokenParams): Promise<Mi
   const issuedAt = Math.floor((params.now?.getTime() ?? Date.now()) / 1000);
   const expiresAt = issuedAt + ACCESS_TOKEN_TTL_SECONDS;
 
-  const token = await new SignJWT({})
+  const token = await new SignJWT({ sid: sessionId })
     // `alg` is the constant, never anything derived from input. `kid` lets a
     // verifier pick the right key out of a two-key JWKS during a rotation
     // without trial-verifying against both.
