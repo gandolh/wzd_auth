@@ -2,5 +2,37 @@
   "name": "@ward/client",
   "version": "0.1.0",
   "private": true,
-  "description": "Ward client package for consuming apps — scaffold only, built out in a later brief."
+  "description": "Ward client for consuming apps — local token verification, cached introspection, and a Fastify guard.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fastify": {
+      "types": "./dist/fastify.d.ts",
+      "default": "./dist/fastify.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "6.2.10"
+  },
+  "devDependencies": {
+    "fastify": "5.12.1",
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "fastify": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "fastify": {
+      "optional": true
+    }
+  }
 }

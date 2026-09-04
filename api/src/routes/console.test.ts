@@ -66,6 +66,11 @@ describe.skipIf(!HAVE_LOCKOUT)("the console session routes", () => {
     process.env["WARD_ADMIN_PASSWORD"] = ADMIN_PASSWORD;
     process.env["WARD_SIGNING_KEY_PATH"] = join(dir, "signing-key.pem");
     process.env["WARD_PUBLIC_ORIGIN"] = ORIGIN;
+    // Mail is part of the required environment contract (brief 07). `file`
+    // transport needs no SMTP credentials, which is the point of having a mode.
+    process.env["WARD_MAIL_TRANSPORT"] = "file";
+    process.env["WARD_MAIL_FILE_DIR"] = "api/mail-outbox";
+    process.env["WARD_MAIL_FROM"] = "ward@gandolh.ro";
 
     const config = await import("../config.js");
     await generateSigningKeyFile(config.WARD_SIGNING_KEY_PATH);

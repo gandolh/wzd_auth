@@ -116,6 +116,43 @@ const envSchema = z.object({
    * its origin, because trimming would hide a genuine misunderstanding of
    * which URL was being asked for.
    */
+  /**
+   * How Ward sends verification mail: `smtp` or `file`.
+   *
+   * **Explicit, required, and deliberately not inferred from `NODE_ENV`.**
+   * Brief 07's acceptance says development must not need SMTP credentials, and
+   * the obvious way to grant that — sniff the environment and fall back to
+   * writing files — is the shape this whole file exists to refuse. An estate
+   * whose mail silently stopped leaving the building because a variable was
+   * unset somewhere is a registration flow that appears to work and delivers
+   * nothing.
+   *
+   * So the mode is stated, and each mode requires its own settings below. A
+   * misconfigured Ward fails at boot naming the variable, rather than at the
+   * moment somebody was waiting for a verification link.
+   */
+  WARD_MAIL_TRANSPORT: z.enum(["smtp", "file"]),
+
+  /**
+   * Where `file` transport writes messages. Required only in that mode.
+   * Relative values resolve against the repo root, and the directory is
+   * gitignored — a verification mail holds a single-use token.
+   */
+  WARD_MAIL_FILE_DIR: z.string().min(1).optional(),
+
+  /** SMTP settings. Required only in `smtp` mode; see the refinement below. */
+  WARD_SMTP_HOST: z.string().min(1).optional(),
+  WARD_SMTP_PORT: z.coerce.number().int().positive().max(65_535).optional(),
+  WARD_SMTP_USER: z.string().min(1).optional(),
+  WARD_SMTP_PASSWORD: z.string().min(1).optional(),
+
+  /**
+   * The `From:` address. Required in both modes — a message written to disk
+   * still has to look like the one that would have been sent, or the `file`
+   * transport stops being a rehearsal of the real thing.
+   */
+  WARD_MAIL_FROM: z.string().min(1),
+
   WARD_PUBLIC_ORIGIN: z
     .string()
     .min(1)
@@ -137,7 +174,40 @@ const envSchema = z.object({
     ),
 });
 
-const parsed = envSchema.safeParse(process.env);
+/**
+ * The mode-dependent half of the contract.
+ *
+ * `zod` can express "required" and "optional" per field, but not "required
+ * *because* another field says so", so the cross-field rule lives here. It
+ * still runs before anything boots, and it still names the missing variable —
+ * which is the property that matters, not where the check happens to sit.
+ */
+const mailAwareSchema = envSchema.superRefine((env, ctx) => {
+  if (env.WARD_MAIL_TRANSPORT === "smtp") {
+    for (const key of [
+      "WARD_SMTP_HOST",
+      "WARD_SMTP_PORT",
+      "WARD_SMTP_USER",
+      "WARD_SMTP_PASSWORD",
+    ] as const) {
+      if (env[key] === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: 'is required when WARD_MAIL_TRANSPORT is "smtp"',
+        });
+      }
+    }
+  } else if (env.WARD_MAIL_FILE_DIR === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["WARD_MAIL_FILE_DIR"],
+      message: 'is required when WARD_MAIL_TRANSPORT is "file"',
+    });
+  }
+});
+
+const parsed = mailAwareSchema.safeParse(process.env);
 if (!parsed.success) {
   const lines = parsed.error.issues.map(
     (issue) => `  - ${issue.path.join(".") || "(env)"}: ${issue.message}`,
@@ -188,3 +258,33 @@ export const WARD_ADMIN_PASSWORD: string = env.WARD_ADMIN_PASSWORD;
 
 /** Not read yet — reserved for token minting (brief 02), which will use it as the `iss` claim. */
 export const WARD_PUBLIC_ORIGIN: string = env.WARD_PUBLIC_ORIGIN;
+
+/**
+ * Mail configuration (brief 07 — public registration).
+ *
+ * Exported as a discriminated union rather than seven loose strings, so the
+ * sender cannot be written against a shape the environment did not actually
+ * produce. In `file` mode there is no SMTP password to leak into a log; in
+ * `smtp` mode the directory does not exist to be written to. The refinement
+ * above is what makes the narrowing sound.
+ */
+export type MailTransport =
+  | { kind: "file"; dir: string; from: string }
+  | { kind: "smtp"; host: string; port: number; user: string; password: string; from: string };
+
+export const MAIL: MailTransport =
+  env.WARD_MAIL_TRANSPORT === "file"
+    ? {
+        kind: "file",
+        // Non-null: the refinement rejected a `file` transport without it.
+        dir: resolve(REPO_ROOT, env.WARD_MAIL_FILE_DIR!),
+        from: env.WARD_MAIL_FROM,
+      }
+    : {
+        kind: "smtp",
+        host: env.WARD_SMTP_HOST!,
+        port: env.WARD_SMTP_PORT!,
+        user: env.WARD_SMTP_USER!,
+        password: env.WARD_SMTP_PASSWORD!,
+        from: env.WARD_MAIL_FROM,
+      };

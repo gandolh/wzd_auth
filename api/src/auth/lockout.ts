@@ -124,11 +124,23 @@ export const LOCKOUT_AMBIGUOUS_ADDRESS_WARN_INTERVAL_SECONDS = 5 * 60;
 /**
  * Which credential surface a counter belongs to.
  *
- * Two, and adding a third means adding another independent budget rather than
- * borrowing one of these. `"login"` is `POST /login` (accounts); `"console"` is
- * `POST /console/login` (the break-glass superuser).
+ * Each member is an **independent budget**, and that is the point: exhausting
+ * one must not exhaust another. Review found that `/login` and
+ * `/console/login` originally shared one, so anyone could spend the login
+ * budget from an address and lock the operator out of the break-glass
+ * credential — the one that exists for when `/login` is under attack.
+ *
+ * - `"login"` — `POST /login`, ordinary accounts.
+ * - `"console"` — `POST /console/login`, the break-glass superuser.
+ * - `"register"` — `POST /register`, the estate's only anonymous write surface
+ *   (brief 07). It is throttled hardest and shares nothing: a registration
+ *   flood must not stop the people who already have accounts from signing in.
+ *
+ * **Adding a surface means adding a member here**, not borrowing an existing
+ * one. The union is closed so that borrowing is a compile error rather than a
+ * quiet coupling nobody notices until the two interfere.
  */
-export type LockoutSurface = "login" | "console";
+export type LockoutSurface = "login" | "console" | "register";
 
 /** Who is attempting what, from where. */
 export interface LockoutTarget {

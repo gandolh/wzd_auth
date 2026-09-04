@@ -39,3 +39,6 @@ api/data/
 
 # Test coverage
 coverage/
+# Verification mail written by WARD_MAIL_TRANSPORT=file. Each message holds a
+# single-use verification token, so these are credentials on disk, not logs.
+api/mail-outbox/

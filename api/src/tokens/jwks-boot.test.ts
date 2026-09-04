@@ -31,6 +31,11 @@ beforeAll(async () => {
   // Deliberately absent. Nothing in this test creates it.
   process.env["WARD_SIGNING_KEY_PATH"] = join(dir, "signing-key.pem");
   process.env["WARD_PUBLIC_ORIGIN"] = "https://gandolh.ro";
+  // Mail is part of the required environment contract (brief 07). `file`
+  // transport needs no SMTP credentials, which is the point of having a mode.
+  process.env["WARD_MAIL_TRANSPORT"] = "file";
+  process.env["WARD_MAIL_FILE_DIR"] = "api/mail-outbox";
+  process.env["WARD_MAIL_FROM"] = "ward@gandolh.ro";
 });
 
 afterAll(async () => {
