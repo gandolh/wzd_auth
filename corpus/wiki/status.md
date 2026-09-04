@@ -1,19 +1,21 @@
 ---
-summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–2 have landed: the scaffold, the schema, and EdDSA signing with JWKS. Nothing is decided that is not recorded.
-updated: 2026-09-02
+summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–3 have landed: the scaffold, the schema, EdDSA signing, login with refresh rotation, and the break-glass superuser. Nothing is decided that is not recorded.
+updated: 2026-09-04
 ---
 
 # Status
 
-_2026-09-02._
+_2026-09-04._
 
 ## Where things stand
 
-**Waves 1–2 landed 2026-09-02.** The repo holds a corpus, a README, and a
-service that boots: three npm workspaces, a fail-closed environment contract,
-six tables in a baseline migration, Ed25519 signing with a published JWKS, and
-15-minute access tokens. **125 tests.** No login route yet, no introspection,
-no UI, no deploy — those are waves 3–7.
+**Waves 1–3 landed 2026-09-04.** Ward can authenticate somebody. The scaffold,
+six tables, Ed25519 signing with a published JWKS, 15-minute access tokens,
+`/login` · `/refresh` · `/logout` with rotating refresh tokens and reuse
+detection, and the environment-only superuser with its console session.
+**315 tests.** No introspection yet, so no app can consume any of it — that is
+brief 04, and it is the next thing that makes Ward useful to anything but
+itself.
 
 | Thread | State |
 |---|---|
@@ -26,9 +28,9 @@ no UI, no deploy — those are waves 3–7.
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **3** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md); 13 left in [briefs/todo/](../briefs/todo/) |
-| Service code | Boots, migrates, answers `/health` and `/.well-known/jwks.json`, mints and verifies access tokens |
-| Tests | **125**, vitest at the repo root |
+| Briefs done | **5** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md) · [03](../briefs/done/03-login-refresh.md) · [06](../briefs/done/06-superuser.md); 11 left in [briefs/todo/](../briefs/todo/) |
+| Service code | Boots, migrates, and authenticates: `/health`, `/.well-known/jwks.json`, `/login`, `/refresh`, `/logout`, `/console/login` |
+| Tests | **315**, vitest at the repo root |
 | Deploy entry in `vps-deploy` | **None** |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
@@ -52,22 +54,34 @@ no UI, no deploy — those are waves 3–7.
 
 ## The next move
 
-**Build wave 3 — briefs 03 (login and refresh rotation) and 06 (the
-superuser).** Disjoint files, parallel-safe.
+**Build wave 4 — briefs 04 (introspection) and 05 (apps, grants and audit).**
+Their files are disjoint, but **their acceptance criteria are mutually
+dependent**: brief 04 must prove a grant added through the console appears in the
+next introspection, and brief 05 must prove disabling an account ends its live
+sessions end to end. Neither can do that alone, so wave 4 runs as three steps —
+both briefs in parallel with unit tests, then a dedicated cross-layer
+integration chunk. That chunk also closes the gap below.
 
-Read the outcome notes on the three done briefs first: they carry the consumable
-contracts, and three of them will bite a caller who assumes otherwise.
+Brief 04 additionally owes brief 06's most important test: **a superuser console
+token presented to `/introspect` must return `active: false`.** There is nothing
+to implement for it — brief 04 needs no superuser branch, and adding one would be
+the bypass [decisions-admin.md](./decisions-admin.md) rejected.
 
-- **`getDb()` is async.** The dynamic import is what keeps importing the db
-  module side-effect-free.
-- **`verifyWardAccessToken(token)` takes no options.** It was deliberately
-  narrowed after review found the options bag could disable issuer, audience and
-  expiry checking. Mint through `mintAccessToken(subject)` and nothing else.
-- **`NewGrant.grantedBy` is required.** Use `SUPERUSER_ACTOR` for the
-  console path, the acting account's subject otherwise.
+Read the outcome notes on the done briefs; four contracts bite a caller who
+assumes otherwise:
 
-Brief 03's rotation rests on `claimRefreshToken` and `revokeFamily` each being a
-single atomic `UPDATE ... RETURNING` — do not decompose either into read-then-write.
+- **`getDb()` is async** — the dynamic import keeps importing the db module
+  side-effect-free.
+- **`verifyWardAccessToken(token)` takes no options**, narrowed after review
+  found the options bag could disable issuer, audience and expiry checking. Mint
+  only through `mintAccessToken(subject)`.
+- **`NewGrant.grantedBy` is required** — `SUPERUSER_ACTOR` for the console path.
+- **`checkLockout`/`recordFailure`/`clearFailures` take a `LockoutTarget`**, not
+  a bare key, and a new credential surface must add its own `LockoutSurface`
+  member rather than borrowing `"login"`.
+
+`RotationOutcome` also gained a `refresh_raced` variant; treat it exactly like
+`reuse_detected` on the wire and **never** as an alarm.
 
 ## The waves
 
@@ -78,7 +92,7 @@ started until the one before it is verified.
 |---|---|---|
 | ~~1~~ | ~~00~~ | ~~Scaffold, rename, env contract~~ **DONE 2026-09-02** |
 | ~~2~~ | ~~01 · 02~~ | ~~Schema; signing keys and JWKS~~ **DONE 2026-09-02** |
-| 3 | 03 · 06 | Login and refresh rotation; the superuser |
+| ~~3~~ | ~~03 · 06~~ | ~~Login and refresh rotation; the superuser~~ **DONE 2026-09-04** |
 | 4 | 04 · 05 | Introspection; apps, grants and audit |
 | 5 | 07 · 08 | Public registration and email; `@ward/client` |
 | 6 | 09 · 10 | Login and self-service UI; the console |
@@ -142,12 +156,20 @@ also the single largest source of remaining work.
 - The research in [landscape.md](./landscape.md) is a survey of published
   comparisons, not hands-on evaluation. Nothing has been installed or measured.
   It documents a road not taken and should not be re-opened casually.
-- **Three briefs of sixteen are built.** 125 tests cover the schema invariants
-  and the token surface, including the alg-confusion cases. What is untested is
-  what is unwritten: there is no login route, no introspection, no UI and no
-  deploy, so nothing has yet been exercised end to end by a real client.
-- **No integration test crosses the layers.** Every test is a unit test against
-  `:memory:` or a generated keypair. The first real login will be the first time
-  the schema and the token layer meet.
+- **Five briefs of sixteen are built.** 315 tests cover the schema invariants,
+  the token surface including the alg-confusion cases, and the login and refresh
+  paths. What is untested is what is unwritten: no introspection, no UI, no
+  deploy.
+- **No integration test crosses the layers, and this is now the biggest gap.**
+  Every test builds its own Fastify instance or opens `:memory:` directly.
+  Nothing exercises the real `buildApp()` against a real database and a real key
+  through a full sign-in → introspect → revoke cycle. Wave 4's third step exists
+  to fix exactly this, and until it lands the test count overstates the
+  confidence.
+- **Two review passes per wave have each found bugs the gates could not.** Every
+  wave so far shipped at least one Critical or Important defect that typecheck,
+  lint and a green suite all missed — the signing key being committable, the WAL
+  checkpoint, the verify options bag, the multi-tab refresh. Budget for review as
+  part of the work, not as a formality after it.
 - Two briefs change **other repos'** locked decisions and owe revision notes
   there: 13 (atrium D30 and D35) and 14 (newspapper's three security calls).

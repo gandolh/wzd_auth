@@ -1,6 +1,6 @@
 ---
-summary: The locked engineering calls made while building — the raw better-sqlite3 driver and why Knex was rejected, scrypt over argon2id, the loopback bind default, and the WAL checkpoint that makes a database backup honest.
-updated: 2026-09-02
+summary: The locked engineering calls made while building — the raw better-sqlite3 driver and why Knex was rejected, scrypt over argon2id, the loopback bind default, the WAL checkpoint that makes a database backup honest, the absolute refresh-family lifetime, and why the lockout is not keyed on request.ip.
+updated: 2026-09-04
 ---
 
 # Decisions — implementation
@@ -97,3 +97,61 @@ treat the sidecars as disposable while the process is running.
 Recorded as a decision rather than a bug fix because the tempting cleanup —
 "`process.exit` closes everything anyway, drop the redundant `close()`" — is
 wrong for a reason nothing in the code makes visible.
+
+## A refresh family's 30 days is absolute, not sliding
+_2026-09-04, brief 03_ — `R2` inherits `R1`'s `expires_at`. The 30 days runs
+from **login**, not from the most recent rotation, so a family dies 30 days
+after it was born however often it is used.
+
+[decisions-tokens.md](./decisions-tokens.md) says "30-day rotating refresh" and
+does not say which, so this resolves it in the bounded direction.
+
+**Rejected: a sliding expiry**, which is the more common implementation and is
+friendlier — nobody active ever re-authenticates. It was rejected because it
+makes a family **immortal for as long as anyone keeps rotating it**, and the
+party most likely to rotate quietly every fourteen minutes forever is a thief.
+The reuse alarm only fires when the *victim* returns, and a victim who has
+stopped using the app never returns. A sliding window therefore hands unbounded
+persistence to exactly the party the rotation scheme exists to catch.
+
+The cost is accepted and is real: an active person re-enters their password
+about once a month. Reversing it is one argument at one call site
+(`completeRotation`), so this is cheap to revisit — but it should be revisited
+deliberately, not discovered.
+
+## Logout revokes the family; it does not delete rows
+_2026-09-04, brief 03_ — `POST /logout` marks the family
+`revoked_reason = 'logout'` rather than deleting it. Nothing usable remains —
+`claimRefreshToken` cannot match a revoked row — and the natural-expiry sweep
+removes it later.
+
+This is a **deliberate departure from brief 03's literal wording**, which said
+"deletes the refresh row". Recorded because the brief's text and the code
+disagree and a future reader will otherwise think one of them is a mistake.
+
+**Rejected: `DELETE`.** The `revoked_reason` column exists precisely so the
+console can tell an ordinary logout from a rotation from a theft signal, and
+deleting the row erases exactly what an operator investigating a stolen session
+needs to see. "Leaves no refresh row" was read as "leaves no *usable* row",
+which is the property the acceptance criterion was actually after.
+
+## The lockout is keyed on the forwarded address, never `request.ip`
+_2026-09-04, brief 03_ — `lockoutKeyFor` uses the socket peer when it is not
+loopback, and otherwise the **last** `x-forwarded-for` element.
+
+**Rejected: `request.ip`**, the obvious choice, which is wrong here for a
+reason specific to this estate: Ward binds loopback and Caddy proxies to it, so
+`request.ip` is `127.0.0.1` for **the entire internet**. Keying on it means the
+sixth failed login anywhere in the estate locks out everybody — the measure
+becomes the outage.
+
+**Rejected: the first `x-forwarded-for` element**, the other obvious choice.
+Caddy *appends* the peer it observed, so the last element is the one Caddy
+vouches for; a client prepending a spoofed address only adds an element nobody
+reads. Taking the first would let anyone choose their own lockout bucket, or
+someone else's.
+
+The header is honoured **only when the peer is loopback** — a direct connection
+cannot talk its way into a different bucket. Also rejected, upstream of all of
+this: keying on **username**, which lets a stranger lock a real person out of
+their own account indefinitely.
