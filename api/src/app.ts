@@ -3,6 +3,10 @@ import { healthRoutes } from "./routes/health.js";
 import { jwksRoutes } from "./routes/jwks.js";
 import { authRoutes } from "./routes/auth.js";
 import { consoleRoutes } from "./routes/console.js";
+import { introspectRoutes } from "./routes/introspect.js";
+import { adminAppsRoutes } from "./routes/admin/apps.js";
+import { adminGrantsRoutes } from "./routes/admin/grants.js";
+import { adminAccountsRoutes } from "./routes/admin/accounts.js";
 
 /**
  * Construct and configure the Fastify instance — nothing more.
@@ -78,6 +82,17 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(jwksRoutes);
   await app.register(authRoutes);
   await app.register(consoleRoutes);
+  await app.register(introspectRoutes);
+
+  // The three admin plugins each attach `requireConsoleSession` as a
+  // plugin-scope preHandler, so registering them here does not open anything —
+  // they gate themselves. Their paths all sit under `/console/` and that is
+  // functional rather than cosmetic: the `ward_console` cookie is scoped to
+  // `Path=/ward-api/console`, so a route mounted anywhere else would simply
+  // never receive it.
+  await app.register(adminAppsRoutes);
+  await app.register(adminGrantsRoutes);
+  await app.register(adminAccountsRoutes);
 
   // Registration order carries no meaning — these plugins share no state and
   // no route prefix, and each declares its own paths. It is alphabetical-ish by
