@@ -114,6 +114,10 @@ async function mintFor(forSubject: string, issuedAt?: Date): Promise<string> {
   const keys = await mod.service.getKeySet();
   const minted = await mod.mint.signAccessToken({
     subject: forSubject,
+    // No real refresh row backs this session — these tokens exist to probe
+    // rejection paths (no account, expired, tampered) that never reach the
+    // family-liveness check, so a fresh unregistered family id is honest here.
+    sessionId: mod.refreshTokens.newFamilyId(),
     signingKey: keys.current,
     issuer: ORIGIN,
     ...(issuedAt ? { now: issuedAt } : {}),
@@ -528,7 +532,11 @@ describe("the superuser console token cannot open an app", () => {
     // And the model half: no row anywhere to resolve, so nothing to authorise.
     expect(mod.users.findUserBySubject(db, "superuser")).toBeUndefined();
     expect(mod.grants.listGrantsForSubject(db, "superuser")).toEqual([]);
-    expect(mod.resolve.resolveSession(db, "superuser")).toBe(mod.resolve.INACTIVE);
+    // No account row exists for "superuser", so resolveSession returns INACTIVE
+    // before it ever looks at the session id — any non-empty string will do.
+    expect(mod.resolve.resolveSession(db, "superuser", "unused-session")).toBe(
+      mod.resolve.INACTIVE,
+    );
 
     mod.superuser.closeConsoleSession(opened.token);
   });

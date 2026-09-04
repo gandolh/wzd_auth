@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { listAudit } from "../db/audit-log.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 import { freshDb } from "../db/test-support.js";
 import { generateSigningKeyFile } from "../tokens/keygen.js";
 
@@ -437,7 +438,7 @@ describe.skipIf(!HAVE_LOCKOUT)("the console session routes", () => {
   describe("no console route is reachable with an ordinary account's token", () => {
     it("refuses a valid Ward access token on the console", async () => {
       const { mintAccessToken } = await import("../tokens/service.js");
-      const { token } = await mintAccessToken("c".repeat(32));
+      const { token } = await mintAccessToken("c".repeat(32), newFamilyId());
 
       for (const headers of [
         { cookie: `ward_console=${token}` },

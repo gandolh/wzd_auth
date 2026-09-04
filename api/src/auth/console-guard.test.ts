@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { generateSigningKeyFile } from "../tokens/keygen.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 
 /**
  * The console gate, both directions.
@@ -23,7 +24,7 @@ let dir: string;
 let app: FastifyInstance;
 let superuser: typeof import("./superuser.js");
 let guard: typeof import("./console-guard.js");
-let mintAccessToken: (subject: string) => Promise<{ token: string }>;
+let mintAccessToken: (subject: string, sessionId: string) => Promise<{ token: string }>;
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ward-console-guard-"));
@@ -151,7 +152,7 @@ describe("the console guard rejects everything else with one opaque 401", () => 
      * The mirror direction — a console token rejected by the token layer's
      * verify — is asserted in `superuser.test.ts`.
      */
-    const { token: accessToken } = await mintAccessToken("f".repeat(32));
+    const { token: accessToken } = await mintAccessToken("f".repeat(32), newFamilyId());
     expect(accessToken.split(".")).toHaveLength(3); // it really is a JWT
 
     // In the console cookie, where the guard actually looks.

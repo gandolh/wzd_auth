@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { listApps } from "../../db/apps.js";
 import { listAudit } from "../../db/audit-log.js";
 import { grantRole, listGrantsForSubject, SUPERUSER_ACTOR } from "../../db/grants.js";
+import { newFamilyId } from "../../db/refresh-tokens.js";
 import { findUserByUsername } from "../../db/users.js";
 import { freshDb, seedApps, seedUser } from "../../db/test-support.js";
 import { generateSigningKeyFile } from "../../tokens/keygen.js";
@@ -71,7 +72,7 @@ beforeAll(async () => {
   expect(listGrantsForSubject(db, subject)).toHaveLength(9);
 
   const { mintAccessToken } = await import("../../tokens/service.js");
-  ({ token: accessToken } = await mintAccessToken(subject));
+  ({ token: accessToken } = await mintAccessToken(subject, newFamilyId()));
 
   app = Fastify({ logger: false });
   await app.register(adminAppsRoutes, { db });

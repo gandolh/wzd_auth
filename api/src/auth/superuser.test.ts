@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { generateSigningKeyFile } from "../tokens/keygen.js";
 import { countAudit, listAudit, recordAudit, SUPERUSER_LABEL } from "../db/audit-log.js";
+import { newFamilyId } from "../db/refresh-tokens.js";
 import { freshDb } from "../db/test-support.js";
 
 /**
@@ -164,7 +165,7 @@ describe("a console session is not a JWT", () => {
   });
 
   it("does not verify a real access token as a console session, either", async () => {
-    const minted = await tokens.mintAccessToken("a".repeat(32));
+    const minted = await tokens.mintAccessToken("a".repeat(32), newFamilyId());
 
     expect(superuser.resolveConsoleSession(minted.token)).toBeUndefined();
   });
