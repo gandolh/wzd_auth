@@ -48,6 +48,23 @@ export interface GrantRow {
  */
 export const SUPERUSER_ACTOR = "superuser";
 
+/**
+ * The value `granted_by` carries when **public registration** conferred the
+ * grant — an app's baseline role, handed out because its
+ * `public_registration` flag was on.
+ *
+ * A sibling of `SUPERUSER_ACTOR` and safe for the same reason: nothing joins
+ * this column to `users`, and a subject is always 32 lowercase hex characters,
+ * so a hyphenated word can never be mistaken for one.
+ *
+ * Two tempting alternatives are both wrong. `SUPERUSER_ACTOR` would make the
+ * audit trail claim the break-glass credential acted, when nobody did. The
+ * registrant's own subject would read as "this person granted themselves",
+ * implying an authority they do not hold — what actually conferred it is the
+ * registration flow acting on a flag the operator set earlier.
+ */
+export const SELF_REGISTRATION_ACTOR = "self-registration";
+
 export interface NewGrant {
   subject: string;
   appSlug: string;

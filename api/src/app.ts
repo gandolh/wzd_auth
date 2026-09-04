@@ -7,6 +7,7 @@ import { introspectRoutes } from "./routes/introspect.js";
 import { adminAppsRoutes } from "./routes/admin/apps.js";
 import { adminGrantsRoutes } from "./routes/admin/grants.js";
 import { adminAccountsRoutes } from "./routes/admin/accounts.js";
+import { registerRoutes } from "./routes/register.js";
 
 /**
  * Construct and configure the Fastify instance — nothing more.
@@ -93,6 +94,19 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(adminAppsRoutes);
   await app.register(adminGrantsRoutes);
   await app.register(adminAccountsRoutes);
+
+  /**
+   * Public registration and email verification, last because it is the only
+   * anonymous *write* surface in the estate — worth being able to find in one
+   * place when reasoning about what an unauthenticated caller can reach.
+   *
+   * It registers `/verify` inside its own encapsulated scope with a `req` log
+   * serializer that redacts the whole query string. That is load-bearing rather
+   * than tidy: the verification link has to be clickable from a mail client, so
+   * the token travels in a URL, and Fastify writes its `incoming request` line
+   * before any `onRequest` hook could scrub it.
+   */
+  await app.register(registerRoutes);
 
   // Registration order carries no meaning — these plugins share no state and
   // no route prefix, and each declares its own paths. It is alphabetical-ish by
