@@ -515,8 +515,14 @@ describe("POST /refresh", () => {
 
   /**
    * The most important test in the brief, at the HTTP level.
+   *
+   * `R1 → R2 → R3`, then a replay of `R1`. Two rotations deep is what separates
+   * theft from the same-token race the grace window now forgives: the family
+   * does have a live tip, but `R1` is not its parent, so whoever is presenting
+   * `R1` is arriving with a copy rather than losing a coin flip against their
+   * own other tab. The race is asserted directly in the next block.
    */
-  it("refreshing twice with the same token revokes the family", async () => {
+  it("replaying a token whose family has moved on revokes the family", async () => {
     const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.102");
     const r1 = setCookies(loggedIn.headers).get("ward_refresh")!.value;
     const familyId = mod.refreshTokens.findRefreshToken(
@@ -531,6 +537,15 @@ describe("POST /refresh", () => {
     });
     expect(first.statusCode).toBe(200);
     const r2 = setCookies(first.headers).get("ward_refresh")!.value;
+
+    // R2 is spent in its turn, so R1's successor is no longer the live tip.
+    const second = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      payload: { refreshToken: r2 },
+    });
+    expect(second.statusCode).toBe(200);
+    const r3 = setCookies(second.headers).get("ward_refresh")!.value;
 
     // The replay.
     const replay = await app.inject({
@@ -552,19 +567,19 @@ describe("POST /refresh", () => {
     expect(cleared.get("ward_refresh")!.value).toBe("");
     expect(cleared.get("ward_refresh")!.maxAge).toBe("0");
 
-    // R2 — which the legitimate client was holding — is dead too. Revoking only
+    // R3 — which the legitimate client was holding — is dead too. Revoking only
     // the replayed token would leave whoever stole it holding a live one.
-    const withR2 = await app.inject({
+    const withR3 = await app.inject({
       method: "POST",
       url: "/refresh",
-      payload: { refreshToken: r2 },
+      payload: { refreshToken: r3 },
     });
-    expect(withR2.statusCode).toBe(401);
+    expect(withR3.statusCode).toBe(401);
 
     // Scoped to this family: `alice` has other live sessions from other cases
     // in this file, and killing those would be the bug rather than the fix.
     const family = mod.refreshTokens.listFamily(db, familyId);
-    expect(family).toHaveLength(2);
+    expect(family).toHaveLength(3);
     for (const member of family) {
       expect(member.revoked_at).not.toBeNull();
     }
@@ -701,10 +716,15 @@ describe("POST /logout", () => {
     expect(after.statusCode).toBe(401);
   });
 
-  it("answers 204 whether or not the token was real", async () => {
-    // Logout must never be an oracle for testing a stolen token.
+  it("answers 204 whether or not the presented token was real", async () => {
+    // Logout must never be an oracle for testing a stolen token — same status
+    // and the same two clearing cookies for a token that was real, one that was
+    // never issued, and one that is not even a token.
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.113");
+    const real = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+
     for (const payload of [
-      undefined,
+      { refreshToken: real },
       { refreshToken: "f".repeat(64) },
       { refreshToken: "not-a-token" },
     ]) {
@@ -732,6 +752,430 @@ describe("POST /logout", () => {
     });
 
     expect(stillWorks.statusCode).toBe(200);
+  });
+});
+
+describe("the same-token refresh race", () => {
+  /**
+   * The reviewers' own reproduction, at the HTTP level.
+   *
+   * Two `/refresh` calls carrying the same `R1`, fired together. Before the fix
+   * this answered `200` and `401`, ended the family
+   * `[{used:true,reason:'rotated'},{used:false,reason:'reuse_detected'}]`, and
+   * left `listLiveTokensForSubject` at **zero** — so the `200` had handed the
+   * client cookies for an `R2` that was revoked microseconds later, and the
+   * client was dead on its next refresh believing it held a fresh 30-day
+   * credential.
+   */
+  it("leaves the session alive, with the winner's R2 still usable", async () => {
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.130");
+    const r1 = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+    const familyId = mod.refreshTokens.findRefreshToken(
+      db,
+      mod.refreshTokens.hashRefreshToken(r1),
+    )!.family_id;
+
+    const [a, b] = await Promise.all([
+      app.inject({ method: "POST", url: "/refresh", payload: { refreshToken: r1 } }),
+      app.inject({ method: "POST", url: "/refresh", payload: { refreshToken: r1 } }),
+    ]);
+
+    // Exactly one winner: `claimRefreshToken`'s single statement was never the
+    // problem, and it still holds.
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 401]);
+
+    const winner = a.statusCode === 200 ? a : b;
+    const loser = a.statusCode === 200 ? b : a;
+
+    // The loser is told nothing. Byte-identical to every other refresh failure:
+    // "that was only a race" confirms the token was genuine just as surely as
+    // "already used" does.
+    expect(loser.json()).toEqual({ error: "invalid_refresh" });
+
+    const r2 = setCookies(winner.headers).get("ward_refresh")!.value;
+
+    // The family is ALIVE, with exactly one live token: the R2 the winning tab
+    // wrote into the jar the two tabs share.
+    const live = mod.refreshTokens
+      .listLiveTokensForSubject(db, subject)
+      .filter((row) => row.family_id === familyId);
+    expect(live).toHaveLength(1);
+    expect(live[0]!.token_hash).toBe(mod.refreshTokens.hashRefreshToken(r2));
+
+    // And it rotates, which is the property the client is relying on.
+    const next = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      payload: { refreshToken: r2 },
+    });
+    expect(next.statusCode).toBe(200);
+  });
+
+  it("records session.refresh_raced with the presenter's address, and no theft alarm", async () => {
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.131");
+    const r1 = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+    const familyId = mod.refreshTokens.findRefreshToken(
+      db,
+      mod.refreshTokens.hashRefreshToken(r1),
+    )!.family_id;
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/refresh",
+        headers: { "x-forwarded-for": "203.0.113.131" },
+        payload: { refreshToken: r1 },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/refresh",
+        headers: { "x-forwarded-for": "203.0.113.131" },
+        payload: { refreshToken: r1 },
+      }),
+    ]);
+
+    /**
+     * The loser must not carry cookie-clearing headers.
+     *
+     * This is the whole point of leaving the family alive. Both responses are in
+     * flight to ONE cookie jar — the estate is a single origin, so every tab and
+     * all six apps share it — and if the loser's 401 lands after the winner's
+     * 200, a clearing `Set-Cookie` drops `ward_session` and `ward_refresh` and
+     * signs the person out anyway. Keeping the family alive server-side while
+     * telling the browser to throw its tokens away is a fix that works half the
+     * time, decided by response ordering.
+     *
+     * Status and body stay identical to every other refresh failure; only the
+     * absence of `Set-Cookie` differs. See `refreshRejected` for what that
+     * concedes and why it is worth it.
+     */
+    const winner = first!.statusCode === 200 ? first! : second!;
+    const loser = first!.statusCode === 200 ? second! : first!;
+    expect([winner.statusCode, loser.statusCode]).toEqual([200, 401]);
+    expect(loser.headers["set-cookie"]).toBeUndefined();
+    expect(loser.json()).toEqual({ error: "invalid_refresh" });
+
+    // And the winner's R2 is genuinely usable — the session survived.
+    const r2 = setCookies(winner.headers).get("ward_refresh")!.value;
+    const afterRace = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      headers: { "x-forwarded-for": "203.0.113.131" },
+      payload: { refreshToken: r2 },
+    });
+    expect(afterRace.statusCode).toBe(200);
+
+    const raced = mod.auditLog
+      .listAudit(db, { action: "session.refresh_raced" })
+      .filter((row) => row.target_id === familyId);
+    expect(raced).toHaveLength(1);
+    expect(JSON.parse(raced[0]!.detail!)).toMatchObject({ ip: "203.0.113.131" });
+
+    // An operator paging on the theft alarm must not be woken by two tabs.
+    expect(
+      mod.auditLog
+        .listAudit(db, { action: "session.reuse_detected" })
+        .filter((row) => row.target_id === familyId),
+    ).toEqual([]);
+  });
+
+  it("records the presenter's address on a genuine reuse too", async () => {
+    // The one row an operator is meant to act on used to name subject, family
+    // and timestamps but not who presented the replayed token.
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.132");
+    const r1 = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+    const familyId = mod.refreshTokens.findRefreshToken(
+      db,
+      mod.refreshTokens.hashRefreshToken(r1),
+    )!.family_id;
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      payload: { refreshToken: r1 },
+    });
+    const r2 = setCookies(first.headers).get("ward_refresh")!.value;
+    await app.inject({ method: "POST", url: "/refresh", payload: { refreshToken: r2 } });
+
+    // A thief, from somewhere else entirely.
+    await app.inject({
+      method: "POST",
+      url: "/refresh",
+      headers: { "x-forwarded-for": "185.220.101.99" },
+      payload: { refreshToken: r1 },
+    });
+
+    const rows = mod.auditLog
+      .listAudit(db, { action: "session.reuse_detected" })
+      .filter((row) => row.target_id === familyId);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.detail!)).toMatchObject({ ip: "185.220.101.99" });
+  });
+
+  it("writes one reuse row per family however many times the token is replayed", async () => {
+    // `/refresh` is exempt from the lockout, so an ungated audit write here is
+    // unbounded growth of `audit_log` by an unauthenticated caller — and it
+    // drowns the operator's only alert channel.
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.133");
+    const r1 = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+    const familyId = mod.refreshTokens.findRefreshToken(
+      db,
+      mod.refreshTokens.hashRefreshToken(r1),
+    )!.family_id;
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      payload: { refreshToken: r1 },
+    });
+    const r2 = setCookies(first.headers).get("ward_refresh")!.value;
+    await app.inject({ method: "POST", url: "/refresh", payload: { refreshToken: r2 } });
+
+    for (let i = 0; i < 25; i += 1) {
+      const replay = await app.inject({
+        method: "POST",
+        url: "/refresh",
+        payload: { refreshToken: r1 },
+      });
+      expect(replay.statusCode).toBe(401);
+    }
+
+    expect(
+      mod.auditLog
+        .listAudit(db, { action: "session.reuse_detected" })
+        .filter((row) => row.target_id === familyId),
+    ).toHaveLength(1);
+  });
+});
+
+describe("a success only forgives its own account's failures", () => {
+  /**
+   * The reviewers' own reproduction. `clearFailures` was keyed on the address
+   * alone, so a successful login wiped the failures accumulated against *other*
+   * accounts: four wrong guesses at a victim, one correct login as the
+   * attacker's own account, counter back to zero, repeat — **40 wrong guesses
+   * from one address with no `429` at all**, measured at ~35 a second. `prm` is
+   * seeded `publicRegistration: true`, so brief 07 makes obtaining that one
+   * valid account self-service.
+   */
+  it("does not let one valid account buy unlimited guessing at another", async () => {
+    const ip = "198.51.100.40";
+    await mod.users.createUser(db, {
+      username: "attacker",
+      passwordHash: await mod.password.hashPassword(PASSWORD),
+    });
+
+    let accepted = 0;
+    let refused = false;
+
+    // Ten rounds of the attack: four guesses at `alice`, then one correct login
+    // as `attacker` to launder the counter.
+    for (let round = 0; round < 10 && !refused; round += 1) {
+      for (let guess = 0; guess < 4; guess += 1) {
+        const attempt = await login({ username: "alice", password: `guess-${round}-${guess}` }, ip);
+        if (attempt.statusCode === 429) {
+          refused = true;
+          break;
+        }
+        expect(attempt.statusCode).toBe(401);
+        accepted += 1;
+      }
+      if (refused) break;
+
+      const own = await login({ username: "attacker", password: PASSWORD }, ip);
+      if (own.statusCode === 429) {
+        refused = true;
+        break;
+      }
+      // The attacker's own login still works — the fix must not break the
+      // legitimate case it is protecting.
+      expect(own.statusCode).toBe(200);
+    }
+
+    expect(refused, "the guessing loop must reach a 429").toBe(true);
+    // Five, the whole budget, and not one more.
+    expect(accepted).toBeLessThanOrEqual(mod.lockout.LOCKOUT_MAX_FAILURES);
+  });
+
+  it("still clears the counter for the account that authenticated", async () => {
+    const ip = "198.51.100.41";
+
+    for (let i = 0; i < 4; i += 1) {
+      expect((await login({ username: "alice", password: "wrong" }, ip)).statusCode).toBe(401);
+    }
+    expect((await login({ username: "alice", password: PASSWORD }, ip)).statusCode).toBe(200);
+
+    // A full fresh allowance, not one attempt away from a 429.
+    for (let i = 0; i < 5; i += 1) {
+      expect((await login({ username: "alice", password: "wrong" }, ip)).statusCode).toBe(401);
+    }
+    expect((await login({ username: "alice", password: "wrong" }, ip)).statusCode).toBe(429);
+  });
+});
+
+describe("a mint failure leaves nothing behind", () => {
+  /**
+   * `issueRefreshToken` used to run before `mintAccessToken`, so a signing-key
+   * failure answered `500` with a live 30-day refresh row already stored for a
+   * client that never received it — a session the console would list and nobody
+   * could ever use or revoke. Minting first means the failure leaves no row.
+   */
+  it("writes no refresh row when the access token cannot be minted", async () => {
+    const { rename } = await import("node:fs/promises");
+    const tokens = await import("../tokens/service.js");
+    const keyPath = process.env["WARD_SIGNING_KEY_PATH"]!;
+    const stashed = `${keyPath}.stashed`;
+
+    const victim = mod.users.createUser(db, {
+      username: "mint-failure",
+      passwordHash: await mod.password.hashPassword(PASSWORD),
+    });
+
+    await rename(keyPath, stashed);
+    tokens.resetTokenServiceForTests();
+
+    try {
+      const response = await login(
+        { username: "mint-failure", password: PASSWORD },
+        "198.51.100.50",
+      );
+
+      // The route throws rather than lying about success.
+      expect(response.statusCode).toBe(500);
+      // And nothing was stored for a client that received nothing.
+      expect(mod.refreshTokens.listLiveTokensForSubject(db, victim.subject)).toEqual([]);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    } finally {
+      await rename(stashed, keyPath);
+      tokens.resetTokenServiceForTests();
+    }
+
+    // And the key being back means the ordinary path works again, so the rest
+    // of this file is unaffected.
+    const after = await login({ username: "mint-failure", password: PASSWORD }, "198.51.100.51");
+    expect(after.statusCode).toBe(200);
+  });
+});
+
+describe("cross-site requests cannot touch the session cookies", () => {
+  /**
+   * The reviewers' own reproduction. `SameSite=Lax` stops the cookies being
+   * *sent* cross-site but not the response *deleting* them, and `text/plain` is
+   * not rejected by Fastify's content-type parser the way `form-urlencoded` and
+   * `multipart` are. So an auto-submitted
+   * `<form method="POST" enctype="text/plain" action=".../ward-api/logout">` on
+   * any page got a `204` with two clearing `Set-Cookie` headers, which the
+   * browser honoured first-party at `Path=/` across all six apps — invisibly,
+   * because a `204` does not navigate.
+   */
+  const crossSiteForm = {
+    "content-type": "text/plain",
+    "sec-fetch-site": "cross-site",
+    origin: "https://evil.example",
+  };
+
+  it("emits no Set-Cookie for a cross-site text/plain POST to /logout", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/logout",
+      headers: crossSiteForm,
+      payload: "refreshToken=whatever",
+    });
+
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: "cross_site" });
+  });
+
+  it("emits no Set-Cookie for a cross-site POST to /refresh", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      headers: crossSiteForm,
+      payload: "refreshToken=whatever",
+    });
+
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("refuses on Sec-Fetch-Site alone, and on a mismatched Origin alone", async () => {
+    // Either header is enough. `same-site` is not `same-origin`: the estate is
+    // one origin and nothing legitimate arrives from a sibling.
+    for (const headers of [
+      { "sec-fetch-site": "cross-site" },
+      { "sec-fetch-site": "same-site" },
+      { "sec-fetch-site": "none" },
+      { origin: "https://evil.example" },
+      // A literal `null` origin — what some cross-origin contexts send — does
+      // not parse, and an unparseable origin is a mismatch.
+      { origin: "null" },
+    ]) {
+      const response = await app.inject({ method: "POST", url: "/logout", headers });
+      expect(response.statusCode, JSON.stringify(headers)).toBe(403);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    }
+  });
+
+  it("still clears both cookies for a same-origin logout with a real token", async () => {
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.140");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/logout",
+      headers: {
+        cookie: cookieHeader(loggedIn.headers),
+        "sec-fetch-site": "same-origin",
+        origin: ORIGIN,
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    const cleared = setCookies(response.headers);
+    expect(cleared.get("ward_session")!.maxAge).toBe("0");
+    expect(cleared.get("ward_refresh")!.maxAge).toBe("0");
+  });
+
+  it("still serves a header-less non-browser client", async () => {
+    // Brief 08's server-side clients send neither header, so an absent header
+    // must pass. Rejecting them would break every non-browser caller in order
+    // to defend against a browser-only attack.
+    const loggedIn = await login({ username: "alice", password: PASSWORD }, "203.0.113.141");
+    const token = setCookies(loggedIn.headers).get("ward_refresh")!.value;
+
+    const refreshed = await app.inject({
+      method: "POST",
+      url: "/refresh",
+      payload: { refreshToken: token },
+    });
+    expect(refreshed.statusCode).toBe(200);
+
+    const rotated = setCookies(refreshed.headers).get("ward_refresh")!.value;
+    const loggedOut = await app.inject({
+      method: "POST",
+      url: "/logout",
+      payload: { refreshToken: rotated },
+    });
+    expect(loggedOut.statusCode).toBe(204);
+  });
+
+  it("clears nothing when the request presented no token at all", async () => {
+    /**
+     * The half of the fix that does not depend on any header, and the one that
+     * actually defuses the attack: a request carrying no credential gets no
+     * cookie instructions. The status is still `204`, so the oracle property is
+     * untouched — nothing on the wire distinguishes this from a logout that
+     * killed a real family except the absence of headers for cookies the caller
+     * never sent.
+     */
+    const logout = await app.inject({ method: "POST", url: "/logout" });
+    expect(logout.statusCode).toBe(204);
+    expect(logout.headers["set-cookie"]).toBeUndefined();
+
+    const refresh = await app.inject({ method: "POST", url: "/refresh" });
+    expect(refresh.statusCode).toBe(401);
+    expect(refresh.json()).toEqual({ error: "invalid_refresh" });
+    expect(refresh.headers["set-cookie"]).toBeUndefined();
   });
 });
 

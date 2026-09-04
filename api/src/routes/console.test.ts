@@ -242,6 +242,108 @@ describe.skipIf(!HAVE_LOCKOUT)("the console session routes", () => {
       expect(elsewhere.statusCode).toBe(200);
     });
 
+    /**
+     * The finding, at the HTTP level and in both directions.
+     *
+     * Five wrong `/login` attempts from an address made a **correct**
+     * `/console/login` from that address answer `429`, and vice versa. On a
+     * one-operator estate behind a home NAT that is the same address — so the
+     * break-glass credential shared its failure budget with the surface it
+     * exists to survive. `/login` and `/console/login` still agree on what an
+     * *address* is (`lockoutKeyFor`, deliberately shared); what they no longer
+     * share is the counter.
+     */
+    describe("the two surfaces hold independent budgets", () => {
+      const SHARED_IP = "198.51.100.77";
+      const ACCOUNT_PASSWORD = "correct-horse-battery";
+
+      async function buildBoth(): Promise<FastifyInstance> {
+        const { authRoutes } = await import("./auth.js");
+        const { consoleRoutes } = await import("./console.js");
+        const both = Fastify({ logger: false });
+        await both.register(authRoutes, { db });
+        await both.register(consoleRoutes, { db });
+        await both.ready();
+        return both;
+      }
+
+      beforeAll(async () => {
+        const { createUser } = await import("../db/users.js");
+        const { hashPassword } = await import("../auth/password.js");
+        createUser(db, {
+          username: "surface-test",
+          passwordHash: await hashPassword(ACCOUNT_PASSWORD),
+        });
+      });
+
+      it("exhausting /login leaves the break-glass credential usable", async () => {
+        const both = await buildBoth();
+        try {
+          for (let i = 0; i < 6; i += 1) {
+            await both.inject({
+              method: "POST",
+              url: "/login",
+              payload: { username: "surface-test", password: "wrong" },
+              remoteAddress: SHARED_IP,
+            });
+          }
+
+          // `/login` is spent from that address.
+          const accountLogin = await both.inject({
+            method: "POST",
+            url: "/login",
+            payload: { username: "surface-test", password: ACCOUNT_PASSWORD },
+            remoteAddress: SHARED_IP,
+          });
+          expect(accountLogin.statusCode).toBe(429);
+
+          // The console is not. This is the credential that exists for when
+          // `/login` is broken, including when it is under attack.
+          const consoleLogin = await both.inject({
+            method: "POST",
+            url: "/console/login",
+            payload: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD },
+            remoteAddress: SHARED_IP,
+          });
+          expect(consoleLogin.statusCode).toBe(200);
+        } finally {
+          await both.close();
+        }
+      });
+
+      it("exhausting /console/login leaves an ordinary login usable", async () => {
+        const both = await buildBoth();
+        try {
+          for (let i = 0; i < 6; i += 1) {
+            await both.inject({
+              method: "POST",
+              url: "/console/login",
+              payload: { username: ADMIN_USERNAME, password: "wrong" },
+              remoteAddress: SHARED_IP,
+            });
+          }
+
+          const consoleLogin = await both.inject({
+            method: "POST",
+            url: "/console/login",
+            payload: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD },
+            remoteAddress: SHARED_IP,
+          });
+          expect(consoleLogin.statusCode).toBe(429);
+
+          const accountLogin = await both.inject({
+            method: "POST",
+            url: "/login",
+            payload: { username: "surface-test", password: ACCOUNT_PASSWORD },
+            remoteAddress: SHARED_IP,
+          });
+          expect(accountLogin.statusCode).toBe(200);
+        } finally {
+          await both.close();
+        }
+      });
+    });
+
     it("clears the failure counter on a success", async () => {
       await login({ username: ADMIN_USERNAME, password: "wrong" });
       await login({ username: ADMIN_USERNAME, password: "wrong" });

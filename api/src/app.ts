@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { healthRoutes } from "./routes/health.js";
 import { jwksRoutes } from "./routes/jwks.js";
 import { authRoutes } from "./routes/auth.js";
@@ -31,6 +31,47 @@ export async function buildApp(): Promise<FastifyInstance> {
     // needs to keep that in mind when deciding what is allowed to travel in
     // a URL. Nothing here overrides the default; naming it so a future
     // change to `logger` doesn't casually turn body or header logging on.
+  });
+
+  /**
+   * One generic body for every unhandled throw. **The default is a leak.**
+   *
+   * With no error handler Fastify's default reply puts `err.message` in the
+   * body, and the reproduction was as bad as that sounds: a missing signing key
+   * plus *correct* credentials answered `500` with the absolute on-disk path of
+   * the estate's signing key and the shape of the deploy layout, from the one
+   * route the whole internet can reach unauthenticated. A `SqliteError` would
+   * hand out a column name the same way.
+   *
+   * Deliberate client errors are **not** flattened. Routes send their own 4xx
+   * bodies with `reply.code(...).send(...)`, which never reaches an error
+   * handler at all; what does reach it with a `statusCode` set is Fastify's own
+   * client-error machinery — a `415` on an unsupported content type, a `400` on
+   * an unparseable body, a `404`. Those messages are about the request the
+   * caller sent, not about this server, and brief 09 renders some of them, so
+   * they pass through unchanged. Only a throw with no client-error status — or
+   * one claiming a 5xx — becomes `{"error":"internal"}`.
+   *
+   * The real error is logged server-side first, at `error`, with the request
+   * bound to it, so nothing is lost to the operator.
+   */
+  // The `<FastifyError>` is load-bearing: Fastify types the error parameter as
+  // `unknown` by default, and `statusCode` is the property that tells a
+  // deliberate client error from a genuine fault.
+  app.setErrorHandler<FastifyError>((error, request, reply) => {
+    const status = typeof error.statusCode === "number" ? error.statusCode : 500;
+
+    if (status >= 400 && status < 500) {
+      request.log.info({ err: error, statusCode: status }, "request rejected");
+      return reply.code(status).send({
+        statusCode: status,
+        error: error.name,
+        message: error.message,
+      });
+    }
+
+    request.log.error({ err: error }, "unhandled error");
+    return reply.code(500).send({ error: "internal" });
   });
 
   await app.register(healthRoutes);

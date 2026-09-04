@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { wardSecureCookies } from "./cookie.js";
+
 /**
  * The break-glass superuser and the console session it opens.
  *
@@ -230,23 +232,50 @@ export async function checkSuperuserCredentials(
  * Whether the console cookie should carry `Secure`, derived from
  * `WARD_PUBLIC_ORIGIN`.
  *
- * Same rule brief 03 applies to the session cookies: `Secure` everywhere except
- * plain HTTP, which in practice means a loopback development origin. Derived
- * from the configured origin rather than from the request, because a request
- * header is attacker-controlled and this decides whether a credential may travel
- * in clear text.
+ * Same rule brief 03 applies to the session cookies — and now literally the
+ * same code. This function used to test `WARD_PUBLIC_ORIGIN.startsWith("https:")`
+ * on its own, which dropped the loopback half of the rule the comment claimed to
+ * implement and so **failed open** where its sibling fails closed: for
+ * `http://gandolh.ro` — a well-formed origin `config.ts` accepts, since it does
+ * not restrict `http:` to loopback — `secureCookiesFor` returns `true` and this
+ * returned `false`, shipping the cookie that carries the non-revocable
+ * break-glass session over plain HTTP to a real hostname with no `Secure` at
+ * all. `secureCookiesFor`'s reasoning is the correct one: keep `Secure` and let
+ * the cookie break loudly rather than travel in the clear.
+ *
+ * Derived from the configured origin rather than from the request, because a
+ * request header is attacker-controlled and this decides whether a credential
+ * may travel in clear text. `wardSecureCookies` keeps the `config.js` import
+ * **dynamic** for the reason that module documents — a static one is hoisted and
+ * would run zod validation, and its `process.exit(1)`, merely because something
+ * imported a cookie helper.
  */
 export async function consoleCookieSecure(): Promise<boolean> {
-  const { WARD_PUBLIC_ORIGIN } = await import("../config.js");
-  return WARD_PUBLIC_ORIGIN.startsWith("https:");
+  return wardSecureCookies();
 }
 
 function view(stored: StoredSession): ConsoleSession {
+  /**
+   * Clamped to the absolute deadline.
+   *
+   * The *enforcement* was always right — `expired()` below checks both bounds,
+   * so a busy session does die at the four-hour cap. The reported value was not:
+   * a session 3h59m old reported an `idleExpiresAt` fifteen minutes out, five
+   * minutes past its own `absoluteExpiresAt`. That value flows into
+   * `GET /console/session` and the login response, so the console UI would have
+   * shown a countdown promising time the session does not have — during what is,
+   * by construction, an incident.
+   */
+  const idleExpiresAt = Math.min(
+    stored.lastSeenAt + CONSOLE_SESSION_IDLE_TIMEOUT_SECONDS * 1000,
+    stored.absoluteDeadline,
+  );
+
   return {
     id: stored.id,
     createdAt: new Date(stored.createdAt),
     lastSeenAt: new Date(stored.lastSeenAt),
-    idleExpiresAt: new Date(stored.lastSeenAt + CONSOLE_SESSION_IDLE_TIMEOUT_SECONDS * 1000),
+    idleExpiresAt: new Date(idleExpiresAt),
     absoluteExpiresAt: new Date(stored.absoluteDeadline),
   };
 }

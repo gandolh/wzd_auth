@@ -110,17 +110,86 @@ describe("plain HTTP on loopback", () => {
   });
 
   it("clears cookies without Secure too, so the browser replaces rather than shadows", async () => {
-    const response = await app.inject({ method: "POST", url: "/logout" });
+    // A token has to be PRESENTED: `/logout` no longer emits cookie
+    // instructions for a request that carried no credential, because doing so
+    // let a cross-site POST sign the victim out of the whole estate.
+    const loggedIn = await app.inject({
+      method: "POST",
+      url: "/login",
+      headers: { "x-forwarded-for": "203.0.113.10" },
+      payload: { username: "alice", password: PASSWORD },
+    });
+    const raw0 = loggedIn.headers["set-cookie"];
+    const cookie = (Array.isArray(raw0) ? raw0 : [String(raw0)])
+      .map((header) => header.split(";")[0]!)
+      .join("; ");
+
+    const response = await app.inject({ method: "POST", url: "/logout", headers: { cookie } });
 
     expect(response.statusCode).toBe(204);
 
     const raw = response.headers["set-cookie"];
     const headers = Array.isArray(raw) ? raw : [String(raw)];
+    expect(headers).toHaveLength(2);
 
     for (const header of headers) {
       // A cleared cookie whose `Secure` differs from the original's is a
       // DIFFERENT cookie to the browser, and the original survives.
       expect(setCookieAttributes(header).attributes.has("secure")).toBe(false);
+    }
+  });
+});
+
+describe("a loopback caller with no X-Forwarded-For", () => {
+  /**
+   * The finding: `lockoutKeyFor("127.0.0.1", undefined)` returns `"127.0.0.1"`
+   * and every caller lands in that one bucket, so three wrong logins for one
+   * user plus three for another earned the sixth request a `429` — and so did a
+   * correct login from an innocent third party. That is the estate-wide outage
+   * the recorded decision claims to avoid, and it happened with no log line,
+   * metric or assertion to explain it. It still fails closed into a shared
+   * bucket, which is the right direction; what it must not do is fail closed
+   * *quietly*.
+   *
+   * `app.inject` defaults its peer to `127.0.0.1`, so a request with no
+   * forwarding header here is exactly the shape brief 08's server-side
+   * `@ward/client` would produce.
+   */
+  it("says so in the log, once", async () => {
+    const lines: string[] = [];
+    const stream = {
+      write(chunk: string) {
+        lines.push(chunk);
+      },
+    };
+
+    const { authRoutes } = await import("./auth.js");
+    const { resetLockoutForTests } = await import("../auth/lockout.js");
+    const Fastify = (await import("fastify")).default;
+
+    resetLockoutForTests();
+    const loud = Fastify({ logger: { level: "warn", stream } });
+    await loud.register(authRoutes, { db });
+    await loud.ready();
+
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        await loud.inject({
+          method: "POST",
+          url: "/login",
+          payload: { username: "alice", password: "wrong" },
+        });
+      }
+
+      const warnings = lines.filter((line) => line.includes("no client address available"));
+      // Once, not once per request: the warning must not become the flood it is
+      // warning about.
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("X-Forwarded-For");
+      expect(warnings[0]).toContain("429");
+    } finally {
+      await loud.close();
+      resetLockoutForTests();
     }
   });
 });

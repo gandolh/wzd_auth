@@ -2,7 +2,13 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { checkLockout, clearFailures, lockoutKeyFor, recordFailure } from "../auth/lockout.js";
+import {
+  checkLockout,
+  clearFailures,
+  lockoutKeyFor,
+  recordFailure,
+  type LockoutTarget,
+} from "../auth/lockout.js";
 import { requireConsoleSession, getConsoleSession } from "../auth/console-guard.js";
 import {
   checkSuperuserCredentials,
@@ -108,9 +114,33 @@ const loginBody = z.object({
  * Using brief 03's helper rather than a second derivation is deliberate:
  * `/login` and `/console/login` must agree on what an address is, or an attacker
  * gets two independent budgets from one machine.
+ *
+ * The **counter**, on the other hand, is namespaced (`surface: "console"`) and
+ * must stay that way. Sharing it with `/login` meant five wrong account logins
+ * from an address made a *correct* break-glass login from that address answer
+ * `429`, and on a one-operator estate behind a home NAT that is the same
+ * address. The superuser exists for when things are broken — including when
+ * `/login` is being attacked — so it cannot share a budget with the surface
+ * under attack. Same reasoning as the malformed-body carve-out below.
  */
 function lockoutKey(request: FastifyRequest): string {
-  return lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"]);
+  return lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"], {
+    warn: (detail, message) => {
+      request.log.warn(detail, message);
+    },
+  });
+}
+
+/**
+ * The console's own failure budget for one address.
+ *
+ * No `account`: there is exactly one console credential, so there is no account
+ * to name and no cross-account wipe to worry about — a success here proves the
+ * operator and clears this address's console failures, which is the whole
+ * intent.
+ */
+function consoleLockoutTarget(address: string): LockoutTarget {
+  return { surface: "console", address };
 }
 
 export async function consoleRoutes(
@@ -149,7 +179,7 @@ export async function consoleRoutes(
     const db = await resolveDb();
     const ip = lockoutKey(request);
 
-    const lockout = checkLockout(ip);
+    const lockout = checkLockout(consoleLockoutTarget(ip));
     if (!lockout.allowed) {
       recordAudit(db, {
         actorKind: "system",
@@ -177,7 +207,7 @@ export async function consoleRoutes(
     const ok = await checkSuperuserCredentials(body.data.username, body.data.password);
 
     if (!ok) {
-      recordFailure(ip);
+      recordFailure(consoleLockoutTarget(ip));
       /**
        * The submitted username is deliberately **not** recorded. There is
        * exactly one console credential, so "which username was tried" has one
@@ -195,7 +225,7 @@ export async function consoleRoutes(
       return reply.code(401).send({ error: "invalid credentials" });
     }
 
-    clearFailures(ip);
+    clearFailures(consoleLockoutTarget(ip));
     const { token, session } = openConsoleSession();
 
     /**

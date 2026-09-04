@@ -253,10 +253,57 @@ describe("the console session store", () => {
   });
 });
 
+describe("the reported deadlines", () => {
+  /**
+   * The finding: `idleExpiresAt` was computed from `lastSeenAt` with no clamp,
+   * so a busy session near its four-hour cap reported an idle deadline *past*
+   * its own absolute one — measured at `absoluteExpiresAt: 18:23:57` with
+   * `idleExpiresAt: 18:28:57`. Enforcement was always right (`expired()` checks
+   * both bounds), but that value flows into `GET /console/session` and the login
+   * response, so the console UI would have counted down to a moment the session
+   * does not reach — during what is, by construction, an incident.
+   */
+  it("never reports an idle deadline past the absolute one", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-04T14:00:00.000Z"));
+
+    const opened = superuser.openConsoleSession();
+    // Comfortably inside the cap: idle is the binding deadline and is reported
+    // as itself.
+    expect(opened.session.idleExpiresAt.getTime()).toBe(
+      opened.session.lastSeenAt.getTime() + superuser.CONSOLE_SESSION_IDLE_TIMEOUT_SECONDS * 1000,
+    );
+
+    /**
+     * Kept warm — a page left open polling something — to within five minutes
+     * of the absolute cap, where the 15-minute idle window would otherwise
+     * overshoot it by ten. Advanced in steps with a touch each time, because a
+     * single jump would idle the session out and prove nothing.
+     */
+    const step = 5 * 60;
+    const target =
+      superuser.CONSOLE_SESSION_ABSOLUTE_LIFETIME_SECONDS -
+      superuser.CONSOLE_SESSION_IDLE_TIMEOUT_SECONDS / 3;
+    for (let elapsed = 0; elapsed < target; elapsed += step) {
+      vi.advanceTimersByTime(step * 1000);
+      expect(superuser.resolveConsoleSession(opened.token)).toBeDefined();
+    }
+
+    const resolved = superuser.resolveConsoleSession(opened.token);
+    expect(resolved).toBeDefined();
+    expect(resolved!.idleExpiresAt.getTime()).toBe(resolved!.absoluteExpiresAt.getTime());
+    expect(resolved!.idleExpiresAt.getTime()).toBeLessThanOrEqual(
+      resolved!.absoluteExpiresAt.getTime(),
+    );
+  });
+});
+
 describe("the console cookie", () => {
   it("is scoped to the console subtree, HttpOnly, SameSite=Strict and Secure", async () => {
     expect(superuser.CONSOLE_COOKIE_NAME).toBe("ward_console");
     expect(superuser.CONSOLE_COOKIE_PATH).toBe("/ward-api/console");
+    // Delegated to `cookie.ts`'s `secureCookiesFor` rather than reimplemented —
+    // see `superuser-origin.test.ts` for the boundary it used to fail open on.
     await expect(superuser.consoleCookieSecure()).resolves.toBe(true);
 
     const cookie = superuser.consoleSessionSetCookie("wcs_abc", { secure: true });

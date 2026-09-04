@@ -7,6 +7,7 @@ import {
   generateRefreshToken,
   hashRefreshToken,
   insertRefreshToken,
+  listFamily,
   newFamilyId,
   revokeFamily,
   revokeRefreshToken,
@@ -60,7 +61,50 @@ import { REFRESH_TOKEN_TTL_SECONDS } from "./cookie.js";
  * holding a live one, which is the wrong half in the case that matters. So the
  * family dies, both parties re-authenticate, and only the one who knows the
  * password gets back in. That is the entire value of the mechanism.
+ *
+ * ## …except for one case that is *not* a replay: the same-token race
+ *
+ * "There is no information anywhere that distinguishes them" was too strong.
+ * Two tabs of the same app firing `/refresh` at the same instant present the
+ * **same** `R1`; one wins the claim and one loses it, and the loser used to burn
+ * the family down microseconds after the winner had already written `R2` into
+ * the cookie jar. Reproduced: two concurrent refreshes, statuses `200` and
+ * `401`, and zero live tokens left for the subject. The `200` had set cookies
+ * for an `R2` that was revoked immediately after, so the client believed it held
+ * a fresh 30-day credential and was dead on its next refresh.
+ *
+ * `handleReuse` therefore asks one question before it revokes anything: **is
+ * the family's live tip the direct successor of the token just presented, and
+ * was it issued within `REFRESH_RACE_GRACE_SECONDS`?** If so this is a race, the
+ * family is left alone, and the row written is `session.refresh_raced`. If not —
+ * no live tip, or a tip that belongs to a later rotation, or one older than the
+ * grace window — it is the theft signal exactly as before.
+ *
+ * Two things make the carve-out safe here specifically. The estate is
+ * sub-paths on **one origin**, so every tab shares one cookie jar: the losing
+ * tab's `401` costs nothing because the winning tab has already stored `R2` for
+ * all of them. And the check is *narrow* — a thief replaying a token whose
+ * family has moved on by even one rotation still sees the whole family die,
+ * because the live tip is then not their token's successor.
+ *
+ * The **wire is identical** in both cases: `401 invalid_refresh`, no hint. The
+ * distinction belongs in `audit_log` and nowhere else — telling a caller "that
+ * was just a race" confirms the token was genuine, which is the oracle the
+ * uniform `401` exists to close.
  */
+
+/**
+ * How long after a rotation a re-presentation of the spent token is treated as
+ * a race rather than as theft.
+ *
+ * Ten seconds. It has to cover a browser firing two tabs' refreshes in the same
+ * tick plus a slow response, and it has to be far shorter than any plausible
+ * gap before a thief gets round to using a copied cookie. Every second of it is
+ * a second in which a genuinely stolen `R1` is answered `401` without the family
+ * dying — so it is deliberately the smallest window that covers the concurrency
+ * it exists for, not the largest one that would still feel safe.
+ */
+export const REFRESH_RACE_GRACE_SECONDS = 10;
 
 /** Re-exported so a caller need not know the constant lives in `cookie.ts`. */
 export { REFRESH_TOKEN_TTL_SECONDS };
@@ -127,12 +171,32 @@ export type RotationOutcome =
       previous: RefreshTokenRow;
     }
   | {
-      /** A replay. The family is already revoked and audited by the time this returns. */
+      /**
+       * A replay. The family is already revoked by the time this returns, and
+       * audited **if the sweep actually killed something** — see the note on
+       * the guard in `handleReuse`.
+       */
       status: "reuse_detected";
       subject: string;
       familyId: string;
-      /** How many live tokens the sweep killed. `0` if the family was already dead. */
+      /**
+       * How many live tokens the sweep killed. `0` if the family was already
+       * dead, which is also the caller's signal that nothing happened and no
+       * alarm should be raised.
+       */
       revoked: number;
+    }
+  | {
+      /**
+       * A **benign** re-presentation of a token that was spent moments ago and
+       * whose successor is still live: two tabs refreshing at once. The family
+       * is deliberately left untouched and `session.refresh_raced` is on the
+       * record. The route must still answer the same opaque `401` — see the
+       * module header.
+       */
+      status: "refresh_raced";
+      subject: string;
+      familyId: string;
     }
   /** No such token hash. A forged or long-swept value. */
   | { status: "unknown" }
@@ -147,20 +211,37 @@ export type RotationOutcome =
    */
   | { status: "account_unusable"; subject: string; familyId: string };
 
+/** Extras a caller may thread into a rotation. Purely additive. */
+export interface RotationOptions {
+  /**
+   * The presenter's client address, as `lockoutKeyFor` derives it.
+   *
+   * Recorded in `detail.ip` on `session.reuse_detected` and
+   * `session.refresh_raced`. Those are the two rows an operator is meant to act
+   * on, and without an address they cannot tell a stranger abroad from their
+   * own laptop double-firing a refresh — while the far less interesting
+   * `session.login_failed` has carried `detail.ip` all along.
+   */
+  presentedBy?: string;
+}
+
 /**
  * Present a refresh token and rotate it.
  *
  * Every database write below happens inside one `better-sqlite3` transaction,
  * so a rotation is all-or-nothing: there is no state in which `R1` is spent but
- * `R2` was never stored, which would silently log the person out. The access
- * token is minted by the caller *after* this returns, because minting is async
- * and an `await` inside a synchronous transaction is not expressible (which is
- * a feature — it is what keeps the transaction short).
+ * `R2` was never stored, which would silently log the person out. **The access
+ * token must be minted by the caller *before* this is called** — see the note
+ * on ordering in `routes/auth.ts`: a mint that fails after the claim has
+ * committed leaves the client still holding `R1`, and its next refresh burns the
+ * family. Minting first wastes a JWS in the rare case the claim then fails,
+ * which is cheap.
  */
 export function rotateRefreshToken(
   db: Database.Database,
   presented: string,
   now: Date = new Date(),
+  options: RotationOptions = {},
 ): RotationOutcome {
   const tokenHash = hashRefreshToken(presented);
   const nowIso = now.toISOString();
@@ -181,7 +262,7 @@ export function rotateRefreshToken(
     }
 
     if (row.used_at !== null) {
-      return handleReuse(db, row, nowIso);
+      return handleReuse(db, row, nowIso, options.presentedBy);
     }
 
     if (row.revoked_at !== null) {
@@ -262,7 +343,43 @@ function completeRotation(
   };
 }
 
-function handleReuse(db: Database.Database, row: RefreshTokenRow, nowIso: string): RotationOutcome {
+function handleReuse(
+  db: Database.Database,
+  row: RefreshTokenRow,
+  nowIso: string,
+  presentedBy: string | undefined,
+): RotationOutcome {
+  const raced = raceSuccessor(db, row, nowIso);
+
+  if (raced !== undefined) {
+    /**
+     * A race, not a theft. **Nothing is revoked**, so the winning tab's `R2`
+     * stays live and the session survives; the losing tab simply gets the same
+     * opaque `401` and, because the estate is one origin with one cookie jar,
+     * it is already holding `R2` anyway.
+     *
+     * Its own action, so an operator reading `audit_log` can tell this apart
+     * from the alarm they are supposed to act on. Same `detail` discipline as
+     * below: no token, no hash.
+     */
+    recordAudit(db, {
+      actorKind: "system",
+      actorLabel: "ward",
+      action: "session.refresh_raced",
+      targetKind: "session",
+      targetId: row.family_id,
+      detail: {
+        subject: row.subject,
+        ip: presentedBy ?? null,
+        presentedIssuedAt: row.issued_at,
+        presentedUsedAt: row.used_at,
+        successorIssuedAt: raced.issued_at,
+      },
+    });
+
+    return { status: "refresh_raced", subject: row.subject, familyId: row.family_id };
+  }
+
   const revoked = revokeFamily(db, row.family_id, "reuse_detected", nowIso);
 
   /**
@@ -274,20 +391,31 @@ function handleReuse(db: Database.Database, row: RefreshTokenRow, nowIso: string
    * still find it. **No token and no hash goes in `detail`** — a hash is a
    * lookup key for a credential and the audit log is the one table designed to
    * be read by a human at leisure.
+   *
+   * **Guarded on `revoked > 0`.** `/refresh` is deliberately exempt from the IP
+   * lockout, so without the guard anybody holding one spent token could write
+   * an unbounded number of rows: 25 replays measured 25 rows and 25 `warn`
+   * lines, on an unauthenticated route. The second replay of a family that is
+   * already dead did nothing, so it is not an event — and the flood was
+   * drowning the operator's only alert channel, which made a genuine theft
+   * indistinguishable from noise. One row per family is the whole signal.
    */
-  recordAudit(db, {
-    actorKind: "system",
-    actorLabel: "ward",
-    action: "session.reuse_detected",
-    targetKind: "session",
-    targetId: row.family_id,
-    detail: {
-      subject: row.subject,
-      tokensRevoked: revoked,
-      presentedIssuedAt: row.issued_at,
-      presentedUsedAt: row.used_at,
-    },
-  });
+  if (revoked > 0) {
+    recordAudit(db, {
+      actorKind: "system",
+      actorLabel: "ward",
+      action: "session.reuse_detected",
+      targetKind: "session",
+      targetId: row.family_id,
+      detail: {
+        subject: row.subject,
+        ip: presentedBy ?? null,
+        tokensRevoked: revoked,
+        presentedIssuedAt: row.issued_at,
+        presentedUsedAt: row.used_at,
+      },
+    });
+  }
 
   return {
     status: "reuse_detected",
@@ -295,6 +423,66 @@ function handleReuse(db: Database.Database, row: RefreshTokenRow, nowIso: string
     familyId: row.family_id,
     revoked,
   };
+}
+
+/**
+ * The live token `presented`'s rotation created, if this re-presentation is a
+ * race rather than theft. `undefined` means "treat it as theft".
+ *
+ * Three conditions, all of them necessary:
+ *
+ *  1. **Nobody has rotated since.** If any other member of the family was spent
+ *     at or after `presented.used_at`, then the family's live tip belongs to a
+ *     *later* rotation and `presented` is not its parent — which is a token
+ *     arriving two or more rotations late, not two tabs firing at once. The
+ *     comparison is `>=` rather than `>` deliberately: two rotations landing in
+ *     the same millisecond then read as theft, which is the direction to fail
+ *     in. This is also what makes the check independent of `issued_at` ordering,
+ *     which is only millisecond-precise.
+ *  2. **There is a live tip at all** — unspent, unrevoked, unexpired. A family
+ *     with none has either been swept already or is entirely spent, and in
+ *     neither case is there a session left to protect.
+ *  3. **The tip is fresh**, within `REFRESH_RACE_GRACE_SECONDS`. A replay long
+ *     after the rotation is not concurrency; it is somebody who has been sitting
+ *     on a copy.
+ */
+function raceSuccessor(
+  db: Database.Database,
+  presented: RefreshTokenRow,
+  nowIso: string,
+): RefreshTokenRow | undefined {
+  if (presented.used_at === null) return undefined;
+
+  const presentedUsedAt = Date.parse(presented.used_at);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(presentedUsedAt) || Number.isNaN(now)) return undefined;
+
+  let tip: RefreshTokenRow | undefined;
+
+  for (const member of listFamily(db, presented.family_id)) {
+    if (member.token_hash === presented.token_hash) continue;
+
+    // (1) Somebody else in this family has already rotated since.
+    if (member.used_at !== null && Date.parse(member.used_at) >= presentedUsedAt) {
+      return undefined;
+    }
+
+    // (2) The tip. A well-formed family has at most one.
+    if (
+      member.used_at === null &&
+      member.revoked_at === null &&
+      Date.parse(member.expires_at) > now
+    ) {
+      tip = member;
+    }
+  }
+
+  if (tip === undefined) return undefined;
+
+  // (3)
+  if (now - Date.parse(tip.issued_at) > REFRESH_RACE_GRACE_SECONDS * 1000) return undefined;
+
+  return tip;
 }
 
 /** What `endSession` concluded. */
@@ -366,16 +554,39 @@ export function endSession(
 }
 
 /**
- * Seconds of life left on a refresh row, floored at zero.
+ * Seconds of life left on a refresh row, floored at **one**.
  *
  * The route uses this for the cookie's `Max-Age` instead of the flat 30 days,
  * because `R2` inherits its family's absolute expiry: a cookie that outlives
  * its row leaves a client presenting a credential Ward has already forgotten,
  * and the person sees an unexplained logout instead of a login prompt.
+ *
+ * `Math.max(1, …)` for the same reason `checkLockout` uses it on `Retry-After`:
+ * `Max-Age=0` is not "expires immediately", it is the exact instruction used to
+ * **delete** a cookie. A rotation in the family's final second floors to zero
+ * and would tell the browser to throw the cookie away, which is a different
+ * event from letting it lapse. Cosmetic at a 30-day family lifetime — the end
+ * state, re-authenticate, is intended at the absolute cap either way — but it
+ * would matter the moment a shorter lifetime were configured.
  */
 export function refreshCookieMaxAge(row: RefreshTokenRow, now: Date = new Date()): number {
-  const remaining = Math.floor((Date.parse(row.expires_at) - now.getTime()) / 1000);
-  return remaining > 0 ? remaining : 0;
+  return Math.max(1, Math.floor((Date.parse(row.expires_at) - now.getTime()) / 1000));
+}
+
+/**
+ * The subject a presented refresh token belongs to, whatever state its row is
+ * in — spent, revoked, expired — or `undefined` if the hash is unknown.
+ *
+ * Exists so `routes/auth.ts` can mint the access token **before** opening the
+ * rotation transaction without hashing the token itself. Emphatically **not** an
+ * authorisation check: it says who a token names, not whether it may be used.
+ * Only `rotateRefreshToken` decides that.
+ */
+export function subjectForRefreshToken(
+  db: Database.Database,
+  presented: string,
+): string | undefined {
+  return findRefreshToken(db, hashRefreshToken(presented))?.subject;
 }
 
 /** The account behind a subject, or `undefined` if it cannot sign in. */

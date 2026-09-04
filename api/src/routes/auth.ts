@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { recordAudit } from "../db/audit-log.js";
 import { getDb } from "../db/connection.js";
-import { findUserByUsername } from "../db/users.js";
+import { findUserByUsername, foldUsername } from "../db/users.js";
 import { mintAccessToken } from "../tokens/service.js";
 import {
   ACCESS_COOKIE_NAME,
@@ -14,13 +14,20 @@ import {
   sessionCookies,
   wardSecureCookies,
 } from "../auth/cookie.js";
-import { checkLockout, clearFailures, lockoutKeyFor, recordFailure } from "../auth/lockout.js";
+import {
+  checkLockout,
+  clearFailures,
+  lockoutKeyFor,
+  recordFailure,
+  type LockoutTarget,
+} from "../auth/lockout.js";
 import { MAX_PASSWORD_LENGTH, spendDummyHash, verifyPassword } from "../auth/password.js";
 import {
   endSession,
   issueRefreshToken,
   refreshCookieMaxAge,
   rotateRefreshToken,
+  subjectForRefreshToken,
 } from "../auth/refresh.js";
 
 /**
@@ -40,6 +47,31 @@ import {
  * live in the **body** on all three routes and there is no `?token=` anywhere —
  * which also retires atrium's `?token=` wart rather than reproducing it. There
  * is no `GET` variant of any of these for the same reason.
+ *
+ * ## `/logout` and `/refresh` require a same-origin request
+ *
+ * `SameSite=Lax` stops the cookies being *sent* on a cross-site POST but does
+ * nothing about the response *deleting* them. An auto-submitted
+ * `<form method="POST" enctype="text/plain" action=".../ward-api/logout">` on any
+ * page reached `/logout` — `text/plain` sails past Fastify's content-type parser
+ * where `form-urlencoded` and `multipart` earn a `415` — and the `204` plus two
+ * clearing `Set-Cookie` headers were honoured first-party, at `Path=/`, across
+ * all six apps, with no navigation for the victim to notice. In a loop it meant
+ * they could not hold a session at all.
+ *
+ * Two things close it, and both are needed. The cookies are cleared **only when
+ * the request actually presented a refresh token**, which alone defuses the
+ * attack above. And both routes additionally require a same-origin request:
+ * `Sec-Fetch-Site`, when present, must be `same-origin`, and `Origin`, when
+ * present, must match `WARD_PUBLIC_ORIGIN`. **Absent headers are allowed** —
+ * brief 08's server-side clients send neither, and rejecting a header-less
+ * request would break every non-browser caller to defend against a browser-only
+ * attack.
+ *
+ * `/logout` still answers `204` for every request that presented a token, valid
+ * or not; that oracle property is a recorded acceptance criterion. The
+ * cross-site refusal is decided on headers alone, before any token is looked at,
+ * so it tells a caller nothing about whether their token was real.
  *
  * ## What may and may not reach the log
  *
@@ -97,6 +129,15 @@ export async function authRoutes(
   const secure = await wardSecureCookies();
 
   /**
+   * Resolved here for the same reason, and through a **dynamic** import so that
+   * merely importing this module does not run `config.ts`'s zod validation (and
+   * its `process.exit(1)`). `config.ts` normalises this to a bare origin —
+   * `url.origin === value` is one of its own refinements — so a request's
+   * `Origin` header can be compared to it after the same normalisation.
+   */
+  const { WARD_PUBLIC_ORIGIN } = await import("../config.js");
+
+  /**
    * Lazy, and memoised by `getDb()` itself. Not resolved at registration
    * because `app.ts` is deliberately free of any reach into the database (see
    * its header): `index.ts` runs migrations strictly before `buildApp()`, and a
@@ -113,9 +154,16 @@ export async function authRoutes(
    * page, which is the entire thing `HttpOnly` is for.
    */
   app.post("/login", async (request, reply) => {
-    const key = lockoutKey(request);
+    const address = lockoutKey(request);
 
-    const gate = checkLockout(key);
+    /**
+     * The gate reads the **address** budget for this surface and nothing else —
+     * `checkLockout` ignores `account`, deliberately, so five failures from one
+     * address still earn the sixth request a `429` whatever usernames they
+     * targeted. The account only matters for `recordFailure` and
+     * `clearFailures` below, and it is not known until the body parses.
+     */
+    const gate = checkLockout({ surface: "login", address });
     if (!gate.allowed) {
       return lockedOut(reply, gate.retryAfterSeconds ?? 1);
     }
@@ -130,6 +178,14 @@ export async function authRoutes(
     }
 
     const { username, password } = parsed.data;
+
+    /**
+     * Folded, and folded from the **submitted** name rather than from a row, so
+     * that a guess at an account that does not exist still gets its own bucket
+     * — an attacker's success on their own account must not forgive it.
+     */
+    const target: LockoutTarget = { surface: "login", address, account: foldUsername(username) };
+
     const db = await database();
     const user = findUserByUsername(db, username);
 
@@ -152,7 +208,7 @@ export async function authRoutes(
     // through the ternary above, and the alternative — asserting the narrowing —
     // would let a future edit that makes the dummy path succeed type-check.
     if (user === undefined || !ok) {
-      recordFailure(key);
+      recordFailure(target);
       if (user !== undefined) {
         /**
          * Failures are audited **only for an account that exists**.
@@ -171,7 +227,7 @@ export async function authRoutes(
           action: "session.login_failed",
           targetKind: "user",
           targetId: user.subject,
-          detail: { ip: key },
+          detail: { ip: address },
         });
       }
       // One answer for "no such username" and "wrong password". The client is
@@ -191,14 +247,32 @@ export async function authRoutes(
        * saves a person whose account was disabled from retyping a password that
        * was correct all along.
        */
-      recordFailure(key);
+      recordFailure(target);
       return reply.code(403).send({ error: "account_disabled" });
     }
 
-    clearFailures(key);
+    /**
+     * Only this account's failures, from this address, on this surface.
+     *
+     * The old address-wide clear meant one valid account bought unlimited
+     * guessing at every other: four wrong guesses at a victim, one correct login
+     * as yourself, counter back to zero, repeat — 40 wrong guesses from one
+     * address with no `429` at all, at roughly 35 a second. A success explains
+     * the failures aimed at *the account it proved* and nothing else.
+     */
+    clearFailures(target);
 
-    const issued = issueRefreshToken(db, user.subject);
+    /**
+     * **Minted before the refresh row is written, and that order is the fix.**
+     *
+     * With `issueRefreshToken` first, a mint failure — an unreadable signing
+     * key, say — answered `500` after a live 30-day refresh row had already been
+     * stored for a client that never received it. Minting first means a failure
+     * here leaves nothing behind at all: no row, no cookie, no session the
+     * console would list.
+     */
     const access = await mintAccessToken(user.subject);
+    const issued = issueRefreshToken(db, user.subject);
 
     recordAudit(db, {
       actorKind: "account",
@@ -207,7 +281,7 @@ export async function authRoutes(
       action: "session.login",
       targetKind: "session",
       targetId: issued.row.family_id,
-      detail: { jti: access.jti, ip: key },
+      detail: { jti: access.jti, ip: address },
     });
 
     // No `refreshMaxAgeSeconds` override: the row was created a millisecond
@@ -245,49 +319,98 @@ export async function authRoutes(
    * on the first reuse.
    */
   app.post("/refresh", async (request, reply) => {
+    if (!sameOrigin(request, WARD_PUBLIC_ORIGIN)) {
+      return crossSite(reply);
+    }
+
     const parsedBody = refreshBody.safeParse(request.body);
     const presented =
       readCookie(request.headers.cookie, REFRESH_COOKIE_NAME) ??
       (parsedBody.success ? parsedBody.data?.refreshToken : undefined);
 
     if (presented === undefined) {
+      // Nothing presented, so nothing to clear. Clearing here is what let a
+      // cross-site POST sign the victim out of all six apps — see the header.
+      return reply.code(401).send({ error: "invalid_refresh" });
+    }
+
+    const address = lockoutKey(request);
+    const db = await database();
+
+    /**
+     * **The access token is minted before the rotation transaction opens**, and
+     * the ordering is the point.
+     *
+     * `refresh.ts` guarantees that no state exists in which `R1` is spent but
+     * `R2` was never stored — of the *database*. What matters to the person
+     * using the app is whether the **client** received `R2`, and minting after
+     * the commit had a seam: the claim committed, `mintAccessToken` threw, the
+     * response was a `500` with no `Set-Cookie`, and the browser still held
+     * `R1`. Its next refresh presented a spent token and burned the family down
+     * with a false theft alarm. A dropped response, a client abort or a proxy
+     * timeout does the same thing — that is just the ordinary internet, and
+     * `REFRESH_RACE_GRACE_SECONDS` covers those within its window. Minting first
+     * removes the mint-failure cause outright, at the cost of a wasted signature
+     * on the rare rotation that then fails.
+     *
+     * The subject is peeked off the row rather than taken from the outcome.
+     * `subjectForRefreshToken` is not an authorisation check and is not treated
+     * as one: `rotateRefreshToken` below still decides everything, and a token
+     * whose hash is unknown is refused here without minting anything.
+     */
+    const subject = subjectForRefreshToken(db, presented);
+    if (subject === undefined) {
+      request.log.info({ outcome: "unknown" }, "refresh rejected");
       return refreshRejected(reply, secure);
     }
 
-    const db = await database();
-    const outcome = rotateRefreshToken(db, presented);
+    const access = await mintAccessToken(subject);
+    const outcome = rotateRefreshToken(db, presented, new Date(), { presentedBy: address });
 
     if (outcome.status !== "rotated") {
       /**
        * **Every failure is the same `401` with the same body.** The module knew
-       * whether that token was unknown, expired, revoked or replayed; the wire
-       * does not say. Telling a caller "already used" confirms the token was
-       * genuine, which is a free confirmation handed to whoever stole it.
+       * whether that token was unknown, expired, revoked, raced or replayed; the
+       * wire does not say. Telling a caller "already used" confirms the token
+       * was genuine, which is a free confirmation handed to whoever stole it —
+       * and telling them "that was only a race" confirms it just as well, which
+       * is why `refresh_raced` takes this same branch and differs only in
+       * `audit_log`.
        *
        * The cookies are cleared on the way out, so a client holding a dead
        * refresh token stops presenting it and lands on the login page instead
-       * of looping.
+       * of looping — **except on the raced branch**, which deliberately clears
+       * nothing. See `refreshRejected`'s `clearCookies` parameter for why.
        */
-      if (outcome.status === "reuse_detected") {
+      if (outcome.status === "reuse_detected" && outcome.revoked > 0) {
         // Logged at `warn` because this is the one line in Ward an operator
-        // should be alerted on. No token, no hash — the family id is the handle,
-        // and `audit_log` already has the row (written inside the rotation's
-        // transaction, by `refresh.ts`).
+        // should be alerted on. Gated on `revoked > 0` for the same reason
+        // `refresh.ts` gates its audit row: a replay of a family that is already
+        // dead did nothing, and on a route with no lockout an ungated `warn`
+        // per replay drowns the genuine alarm in noise.
         request.log.warn(
           {
             subject: outcome.subject,
             family: outcome.familyId,
             tokensRevoked: outcome.revoked,
+            ip: address,
           },
           "refresh token reuse detected; revoked the whole family",
+        );
+      } else if (outcome.status === "refresh_raced") {
+        // Not an alarm. Two tabs presented the same token at once; the winner's
+        // R2 is live in the shared cookie jar and the session is intact.
+        request.log.info(
+          { subject: outcome.subject, family: outcome.familyId, ip: address },
+          "refresh token raced; left the family alive",
         );
       } else {
         request.log.info({ outcome: outcome.status }, "refresh rejected");
       }
-      return refreshRejected(reply, secure);
+      return refreshRejected(reply, secure, {
+        clearCookies: outcome.status !== "refresh_raced",
+      });
     }
-
-    const access = await mintAccessToken(outcome.subject);
 
     setSessionCookies(reply, {
       accessToken: access.token,
@@ -320,20 +443,36 @@ export async function authRoutes(
    * already stolen.
    */
   app.post("/logout", async (request, reply) => {
+    if (!sameOrigin(request, WARD_PUBLIC_ORIGIN)) {
+      return crossSite(reply);
+    }
+
     const parsedBody = refreshBody.safeParse(request.body);
     const presented =
       readCookie(request.headers.cookie, REFRESH_COOKIE_NAME) ??
       (parsedBody.success ? parsedBody.data?.refreshToken : undefined);
 
-    if (presented !== undefined) {
-      const db = await database();
-      const result = endSession(db, presented);
-      if (result.ended) {
-        request.log.info(
-          { subject: result.subject, family: result.familyId, tokensRevoked: result.revoked },
-          "logout revoked session family",
-        );
-      }
+    if (presented === undefined) {
+      /**
+       * **Nothing presented, so nothing cleared.**
+       *
+       * The status is still `204`, so this branch is invisible on the wire and
+       * the oracle property is untouched. But emitting the two clearing
+       * `Set-Cookie` headers for a request that carried no credential is what
+       * made `/logout` a cross-site sign-out for the whole estate: the browser
+       * is first-party for Ward on a top-level navigation, honours both
+       * deletions, and `Path=/` reaches all six apps at once.
+       */
+      return reply.code(204).send();
+    }
+
+    const db = await database();
+    const result = endSession(db, presented);
+    if (result.ended) {
+      request.log.info(
+        { subject: result.subject, family: result.familyId, tokensRevoked: result.revoked },
+        "logout revoked session family",
+      );
     }
 
     clearSessionCookies(reply, secure);
@@ -351,7 +490,61 @@ export async function authRoutes(
  * `X-Forwarded-For` element is the one that cannot be spoofed.
  */
 function lockoutKey(request: FastifyRequest): string {
-  return lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"]);
+  return lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"], {
+    // A loopback peer with no forwarded address collapses the whole estate into
+    // one shared counter, and the only visible symptom is an innocent third
+    // party being answered `429`. `lockoutKeyFor` throttles this to one line per
+    // interval per process, so passing the logger cannot itself become a flood.
+    warn: (detail, message) => {
+      request.log.warn(detail, message);
+    },
+  });
+}
+
+/**
+ * Whether the request is same-origin enough to act on the session cookies.
+ *
+ * **Absent headers pass.** `Sec-Fetch-Site` and `Origin` are set by browsers;
+ * brief 08's server-side clients send neither, and refusing a header-less
+ * request would break every non-browser caller in order to defend against a
+ * browser-only attack. What the check catches is the case that actually exists:
+ * a browser that *did* send them and said the request came from somewhere else.
+ *
+ * `Sec-Fetch-Site` must be exactly `same-origin` — not `same-site`, because the
+ * estate is one origin and there is no sibling origin a legitimate request could
+ * come from, and not `none`, because nothing navigates directly into these two
+ * endpoints. An unparseable `Origin` (including the literal `null` some
+ * cross-origin contexts send) is a mismatch, which is the direction to fail in.
+ */
+function sameOrigin(request: FastifyRequest, publicOrigin: string): boolean {
+  const fetchSite = request.headers["sec-fetch-site"];
+  if (typeof fetchSite === "string" && fetchSite.length > 0 && fetchSite !== "same-origin") {
+    return false;
+  }
+
+  const origin = request.headers.origin;
+  if (origin !== undefined && origin.length > 0) {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (parsed.origin !== publicOrigin) return false;
+  }
+
+  return true;
+}
+
+/**
+ * `403`, and deliberately **before** any token is read.
+ *
+ * Deciding this on headers alone is what keeps `/logout`'s "always 204" oracle
+ * property intact: the answer depends on where the request came from and never
+ * on whether the credential it carried was real. No cookie is set or cleared.
+ */
+function crossSite(reply: FastifyReply): FastifyReply {
+  return reply.code(403).send({ error: "cross_site" });
 }
 
 /**
@@ -368,8 +561,49 @@ function lockedOut(reply: FastifyReply, retryAfterSeconds: number): FastifyReply
   return reply.code(429).send({ error: "too_many_attempts", retryAfterSeconds });
 }
 
-function refreshRejected(reply: FastifyReply, secure: boolean): FastifyReply {
-  clearSessionCookies(reply, secure);
+/**
+ * `401` plus the two clearing cookies.
+ *
+ * Only reached when the request **did** present a refresh token, so the
+ * clearing is a response to a credential the caller actually holds and is
+ * dead — it stops a client looping on a token Ward has forgotten. The
+ * no-token case answers the same `401` without touching any cookie; see the
+ * header.
+ */
+/**
+ * The single rejection path for `/refresh`. Status and body are identical for
+ * every failure — unknown, expired, revoked, raced or replayed — because the
+ * wire must not confirm that a presented token was genuine.
+ *
+ * `clearCookies` is the one thing that varies, and only for a **race**.
+ *
+ * Clearing exists to stop a client looping on a token that is dead: it lands
+ * them on the login page instead. In a race the session is **not** dead — the
+ * winning tab's `R2` is live in the cookie jar this response shares — so
+ * clearing here does not tidy up after a dead session, it destroys a live one.
+ * Both responses are in flight to one jar at once (the estate is one origin, so
+ * every tab and all six apps share it), and if the loser's `401` lands after
+ * the winner's `200` the browser drops `ward_session` and `ward_refresh` and
+ * signs the person out — which is the exact outcome leaving the family alive
+ * was meant to prevent. Clearing on this branch made a certain session loss
+ * into a coin flip rather than a fix.
+ *
+ * The cost is honest and small: the absence of `Set-Cookie` tells a caller that
+ * the token they presented was genuine *and* was rotated within
+ * `REFRESH_RACE_GRACE_SECONDS`. Anyone able to ask that question is already
+ * holding the token, so they already know it was genuine; and they can learn
+ * the same thing far more clearly by simply presenting it again after the
+ * window, which kills the family. Weigh that against signing someone out every
+ * other time two of their tabs wake up together.
+ */
+function refreshRejected(
+  reply: FastifyReply,
+  secure: boolean,
+  options: { clearCookies?: boolean } = {},
+): FastifyReply {
+  if (options.clearCookies ?? true) {
+    clearSessionCookies(reply, secure);
+  }
   return reply.code(401).send({ error: "invalid_refresh" });
 }
 

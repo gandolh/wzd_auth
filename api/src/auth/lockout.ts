@@ -11,6 +11,34 @@
  * the population here is the owner plus a few known people, so a shared address
  * being throttled together is a cost worth paying.
  *
+ * ## The decision is on the address; the *forgiveness* is on the account
+ *
+ * The counter that trips a `429` is keyed on `(surface, address)` and nothing
+ * else, so five failures from one address earn the sixth request a `429`
+ * whatever usernames they targeted. But `clearFailures` may only forgive the
+ * failures **attributable to the account that just authenticated**, and that is
+ * why an `Entry` also carries a per-account breakdown.
+ *
+ * Without that split, one valid account bought unlimited guessing: `/login`
+ * cleared the whole address counter on a success, so an attacker with an account
+ * of their own could interleave four wrong guesses at somebody else with one
+ * correct login as themselves and never see a `429`. Measured at ~35 guesses a
+ * second, which is not a rate limit. A success now zeroes only the guesses aimed
+ * at the account it proved; guesses aimed anywhere else keep counting.
+ *
+ * ## Per-surface budgets
+ *
+ * The key carries a `surface`, so `/login` and `/console/login` hold
+ * **independent** budgets. Sharing the *address derivation* (`lockoutKeyFor`) is
+ * deliberate and stays — the two endpoints must agree on what an address is, or
+ * one machine gets two budgets for the same surface. Sharing the *counter* was
+ * not: five wrong `/login` attempts made a correct `/console/login` from the
+ * same address answer `429`, and on a one-operator estate behind a home NAT that
+ * is the same address. The break-glass credential exists for when things are
+ * broken — including when `/login` is under attack — so it cannot share its
+ * budget with the surface being attacked. That is the same reasoning as the
+ * malformed-body carve-out below.
+ *
  * ## No artificial delay
  *
  * There is deliberately no `await sleep(...)` anywhere in this module or in its
@@ -26,7 +54,8 @@
  * the same counter to the superuser console login, and a shared module that
  * drags a web framework or the environment validation along with it would
  * couple two unrelated surfaces. The caller derives the key; `lockoutKeyFor`
- * below is offered as the one-liner for doing that correctly.
+ * below is offered as the one-liner for doing that correctly, and it takes its
+ * logger as a callback rather than importing one.
  *
  * ## In-memory, and it resets on restart
  *
@@ -57,7 +86,7 @@ export const LOCKOUT_MAX_FAILURES = 5;
 export const LOCKOUT_WINDOW_SECONDS = 15 * 60;
 
 /**
- * Hard ceiling on tracked addresses.
+ * Hard ceiling on tracked `(surface, address)` pairs.
  *
  * **An uncapped map is the memory-exhaustion DoS this module is supposed to be
  * defending against.** One failed login from each of a million spoofed
@@ -71,6 +100,54 @@ export const LOCKOUT_WINDOW_SECONDS = 15 * 60;
  */
 export const LOCKOUT_MAX_ENTRIES = 10_000;
 
+/**
+ * How many distinct accounts one address's breakdown will name before the rest
+ * are lumped together.
+ *
+ * The breakdown exists so a success can forgive its own account's failures, and
+ * it is fed by anonymous input: without a cap, a wordlist run at one address
+ * would grow one map entry per username tried. Past the cap, further accounts
+ * are counted under a reserved bucket that `clearFailures` can never name — so
+ * the overflow keeps counting toward the `429` and is simply never forgiven,
+ * which is the correct direction to fail in.
+ */
+export const LOCKOUT_MAX_ACCOUNTS_PER_ADDRESS = 32;
+
+/**
+ * The shortest interval between two "no client address" warnings, in seconds.
+ *
+ * The warning below names a misconfiguration that would repeat on **every**
+ * request, so it needs a throttle or it becomes the flood it is warning about.
+ */
+export const LOCKOUT_AMBIGUOUS_ADDRESS_WARN_INTERVAL_SECONDS = 5 * 60;
+
+/**
+ * Which credential surface a counter belongs to.
+ *
+ * Two, and adding a third means adding another independent budget rather than
+ * borrowing one of these. `"login"` is `POST /login` (accounts); `"console"` is
+ * `POST /console/login` (the break-glass superuser).
+ */
+export type LockoutSurface = "login" | "console";
+
+/** Who is attempting what, from where. */
+export interface LockoutTarget {
+  /** `/login` and `/console/login` hold independent budgets. */
+  surface: LockoutSurface;
+  /** From `lockoutKeyFor(...)`. The counter the `429` decision is keyed on. */
+  address: string;
+  /**
+   * The account the attempt was aimed at, **folded** (`foldUsername`), so that
+   * `Alice` and `alice` are one bucket rather than two.
+   *
+   * Only `recordFailure` and `clearFailures` read it; `checkLockout` ignores it,
+   * because the decision must stay address-wide. Omit it where there is no
+   * account to name — the console has exactly one credential — and the failure
+   * lands in a single per-address bucket that a console success clears.
+   */
+  account?: string;
+}
+
 /** The answer to "may this address attempt a login right now?". */
 export interface LockoutDecision {
   allowed: boolean;
@@ -79,9 +156,15 @@ export interface LockoutDecision {
 }
 
 interface Entry {
+  /** The number the `429` decision reads. Always the sum of `byAccount`. */
   failures: number;
   /** Epoch milliseconds. The counter is gone once the clock passes this. */
   expiresAt: number;
+  /**
+   * `failures`, split by the account each was aimed at. A success may subtract
+   * its own account's share and nothing else.
+   */
+  byAccount: Map<string, number>;
 }
 
 /**
@@ -90,16 +173,44 @@ interface Entry {
  */
 const entries = new Map<string, Entry>();
 
+/** Epoch milliseconds of the last "no client address" warning. */
+let lastAmbiguousWarnAt = 0;
+
 /**
- * Whether `key` may attempt a login.
+ * The separator is a NUL, which cannot appear in a `LockoutSurface` and will
+ * not appear in an address — so no address can be crafted to land in another
+ * surface's bucket.
+ */
+function bucketKey(target: LockoutTarget): string {
+  return `${target.surface}\u0000${target.address}`;
+}
+
+/**
+ * The breakdown key for an attempt.
+ *
+ * Named accounts are prefixed, so a username — which is arbitrary user input —
+ * can never collide with the two reserved buckets: `"*"` for an attempt with no
+ * account to name, and `"+"` for the overflow past
+ * `LOCKOUT_MAX_ACCOUNTS_PER_ADDRESS`.
+ */
+function accountKey(target: LockoutTarget): string {
+  return target.account === undefined ? "*" : `a:${target.account}`;
+}
+
+const OVERFLOW_ACCOUNT_KEY = "+";
+
+/**
+ * Whether `target`'s address may attempt a login on `target`'s surface right
+ * now. `target.account` is deliberately ignored.
  *
  * Pure with respect to the counter — calling it does not record anything, so a
  * route may call it as its first line without that itself counting as an
  * attempt. It does drop the entry if the window has passed, which is the lazy
  * half of expiry (`recordFailure` does the bulk sweep).
  */
-export function checkLockout(key: string): LockoutDecision {
+export function checkLockout(target: LockoutTarget): LockoutDecision {
   const now = Date.now();
+  const key = bucketKey(target);
   const entry = entries.get(key);
 
   if (entry === undefined) {
@@ -123,20 +234,35 @@ export function checkLockout(key: string): LockoutDecision {
 }
 
 /**
- * Count one failed attempt against `key`.
+ * Count one failed attempt against `target`.
  *
  * Call this for **any** credential rejection — unknown username, wrong
  * password, wrong superuser password. Not for a malformed request body: that is
  * a client bug rather than a guess, and counting it means a broken integration
  * locks its own users out.
+ *
+ * Pass `account` even when the username did not resolve to a row: the folded
+ * submitted name is exactly the bucket that must survive somebody else's
+ * successful login.
  */
-export function recordFailure(key: string): void {
+export function recordFailure(target: LockoutTarget): void {
   const now = Date.now();
+  const key = bucketKey(target);
   const existing = entries.get(key);
 
   if (existing !== undefined && existing.expiresAt > now) {
+    attribute(existing, accountKey(target));
     existing.failures += 1;
     existing.expiresAt = now + LOCKOUT_WINDOW_SECONDS * 1000;
+
+    // Re-inserted, not merely mutated. A `Map` keeps an existing key's original
+    // position and `makeRoom` evicts from the front — so without this the
+    // address that has been failing *longest* is the first live counter a flood
+    // drops, which is precisely backwards and is not what the note in
+    // `makeRoom` assumes. Delete-then-set makes eviction order least
+    // recently **failed**.
+    entries.delete(key);
+    entries.set(key, existing);
     return;
   }
 
@@ -145,22 +271,70 @@ export function recordFailure(key: string): void {
   // the insertion order, where eviction reaches it last.
   entries.delete(key);
   makeRoom(now);
-  entries.set(key, { failures: 1, expiresAt: now + LOCKOUT_WINDOW_SECONDS * 1000 });
+  entries.set(key, {
+    failures: 1,
+    expiresAt: now + LOCKOUT_WINDOW_SECONDS * 1000,
+    byAccount: new Map([[accountKey(target), 1]]),
+  });
+}
+
+function attribute(entry: Entry, account: string): void {
+  const existing = entry.byAccount.get(account);
+  if (existing !== undefined) {
+    entry.byAccount.set(account, existing + 1);
+    return;
+  }
+
+  if (entry.byAccount.size >= LOCKOUT_MAX_ACCOUNTS_PER_ADDRESS) {
+    // Past the cap the attribution is lost but the count is not: the overflow
+    // bucket has a reserved key no caller can name, so these failures still
+    // trip the `429` and no success ever forgives them.
+    entry.byAccount.set(OVERFLOW_ACCOUNT_KEY, (entry.byAccount.get(OVERFLOW_ACCOUNT_KEY) ?? 0) + 1);
+    return;
+  }
+
+  entry.byAccount.set(account, 1);
 }
 
 /**
- * Forget `key`'s failures. Called on every **successful** authentication.
+ * Forget the failures **attributable to `target.account`** from
+ * `target.address` on `target.surface`. Called on every **successful**
+ * authentication.
  *
- * Without this, a person who mistypes their password four times and then gets
- * it right stays one failure away from a lockout for the next quarter of an
- * hour — the counter has to mean "unexplained failures", not "failures".
+ * Without any forgiveness, a person who mistypes their password four times and
+ * then gets it right stays one failure away from a lockout for the next quarter
+ * of an hour — the counter has to mean "unexplained failures", not "failures".
+ *
+ * Without the *account* half, one valid account buys unlimited guessing at every
+ * other account from the same address. So this subtracts one account's share and
+ * leaves the rest of the address's budget spent: guesses aimed elsewhere are not
+ * explained by this success and must keep counting.
  */
-export function clearFailures(key: string): void {
-  entries.delete(key);
+export function clearFailures(target: LockoutTarget): void {
+  const now = Date.now();
+  const key = bucketKey(target);
+  const entry = entries.get(key);
+
+  if (entry === undefined) return;
+  if (entry.expiresAt <= now) {
+    entries.delete(key);
+    return;
+  }
+
+  const account = accountKey(target);
+  const attributable = entry.byAccount.get(account) ?? 0;
+  entry.byAccount.delete(account);
+  entry.failures -= attributable;
+
+  // `failures` is the sum of `byAccount`, so zero here means the breakdown is
+  // empty and the entry carries nothing. Drop it rather than leaving a live
+  // zero-count entry occupying a slot under the cap.
+  if (entry.failures <= 0) entries.delete(key);
 }
 
 /**
- * Drop all state. **Tests only** — nothing in the running service calls it.
+ * Drop all state — every counter, every breakdown, and the warning throttle.
+ * **Tests only** — nothing in the running service calls it.
  *
  * The map is module-level, so without this a test that earns a `429` from
  * `127.0.0.1` leaves the next test in the same worker locked out. Call it in a
@@ -168,10 +342,12 @@ export function clearFailures(key: string): void {
  */
 export function resetLockoutForTests(): void {
   entries.clear();
+  lastAmbiguousWarnAt = 0;
 }
 
 /**
- * The number of tracked addresses. Exported for the cap test; not a metric.
+ * The number of tracked `(surface, address)` pairs. Exported for the cap test;
+ * not a metric.
  */
 export function lockoutEntryCountForTests(): number {
   return entries.size;
@@ -188,13 +364,28 @@ function makeRoom(now: number): void {
   }
 
   // Still full: every entry is live, so this is a flood. Evict from the front,
-  // which is the least recently *created* key. Losing a live counter is
-  // acceptable (see LOCKOUT_MAX_ENTRIES); an unbounded map is not.
+  // which — because `recordFailure` re-inserts — is the least recently *failed*
+  // key. Losing a live counter is acceptable (see LOCKOUT_MAX_ENTRIES); an
+  // unbounded map is not.
   while (entries.size >= LOCKOUT_MAX_ENTRIES) {
     const oldest = entries.keys().next();
     if (oldest.done === true) break;
     entries.delete(oldest.value);
   }
+}
+
+/** How `lockoutKeyFor` reports a misconfiguration it cannot fix. */
+export interface LockoutKeyOptions {
+  /**
+   * Called — at most once per
+   * `LOCKOUT_AMBIGUOUS_ADDRESS_WARN_INTERVAL_SECONDS` per process — when no
+   * client address could be derived and every caller therefore shares one
+   * bucket.
+   *
+   * Shaped `(detail, message)` so a pino logger can be passed straight through:
+   * `warn: (detail, message) => request.log.warn(detail, message)`.
+   */
+  warn?: (detail: Record<string, unknown>, message: string) => void;
 }
 
 /**
@@ -224,12 +415,26 @@ function makeRoom(now: number): void {
  * no trusted proxy behind it, and it is ignored entirely in favour of the real
  * socket address.
  *
+ * ## The loopback-with-no-header case is loud, not silent
+ *
+ * A loopback peer that arrives with no forwarded address at all — one of the six
+ * apps calling Ward server-side, a second proxy in front of Caddy, a Caddyfile
+ * that strips `X-Forwarded-For` — collapses the whole estate into one shared
+ * bucket, and the visible symptom is an innocent third party being answered
+ * `429`. That is exactly the estate-wide outage the recorded decision claims to
+ * avoid, so it must not happen quietly. It still **fails closed** into a shared
+ * bucket (a per-request bucket would disable the lockout outright, which is a
+ * worse answer), and it now says so through `options.warn`.
+ *
  * @example
- * const key = lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"]);
+ * const key = lockoutKeyFor(request.socket.remoteAddress, request.headers["x-forwarded-for"], {
+ *   warn: (detail, message) => request.log.warn(detail, message),
+ * });
  */
 export function lockoutKeyFor(
   socketAddress: string | undefined | null,
   forwardedFor: string | string[] | undefined,
+  options: LockoutKeyOptions = {},
 ): string {
   const peer = normaliseAddress(socketAddress);
 
@@ -242,10 +447,35 @@ export function lockoutKeyFor(
     return forwarded;
   }
 
-  // No usable address at all — a Unix socket, or a peer the runtime did not
-  // report. One shared bucket is the safe fallback: it throttles rather than
-  // letting the attempt through uncounted.
-  return peer ?? "unknown";
+  // No usable address at all — a loopback caller with no forwarding header, a
+  // Unix socket, or a peer the runtime did not report. One shared bucket is the
+  // safe fallback: it throttles rather than letting the attempt through
+  // uncounted. Say so, once per interval.
+  const bucket = peer ?? "unknown";
+  warnAmbiguousAddress(options.warn, peer, bucket);
+  return bucket;
+}
+
+function warnAmbiguousAddress(
+  warn: LockoutKeyOptions["warn"],
+  peer: string | undefined,
+  bucket: string,
+): void {
+  if (warn === undefined) return;
+
+  const now = Date.now();
+  if (now - lastAmbiguousWarnAt < LOCKOUT_AMBIGUOUS_ADDRESS_WARN_INTERVAL_SECONDS * 1000) {
+    return;
+  }
+  lastAmbiguousWarnAt = now;
+
+  warn(
+    { peer: peer ?? null, bucket },
+    "no client address available for the login lockout: the peer is loopback (or unreported) " +
+      "and no X-Forwarded-For arrived, so every caller now shares one failure counter and five " +
+      "failures anywhere will answer 429 to everybody. Check that Caddy sets X-Forwarded-For " +
+      "and that nothing proxies in front of it.",
+  );
 }
 
 function lastForwardedAddress(forwardedFor: string | string[] | undefined): string | undefined {
