@@ -40,7 +40,7 @@ paragraph, then [wiki/estate.md](wiki/estate.md) for what it has to absorb.
 | [landscape.md](wiki/landscape.md) | The candidate answers researched on 2026-09-01 — off-the-shelf identity providers from Keycloak down to Pocket ID, the forward-auth gateways, and building wzd_auth as a small owned service — with what each one costs against this estate specifically. |
 | [open-questions.md](wiki/open-questions.md) | Nothing is open. The design was settled across six rounds of grilling on 2026-09-01 — kept as a page so the next open question has somewhere to land. |
 | [overview.md](wiki/overview.md) | What Ward is — one identity, one credential store and one set of access grants for every side project on the shared VPS — the settled shape in a paragraph, and how to pick up the thread. |
-| [status.md](wiki/status.md) | Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–4 have landed: Ward now authenticates people, answers introspection, and administers apps, grants and accounts. Nothing is decided that is not recorded. |
+| [status.md](wiki/status.md) | Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–5 have landed. The API is complete and the client package exists; what is missing is every screen a person would look at. Nothing is decided that is not recorded. |
 
 <!-- catalog:end -->
 

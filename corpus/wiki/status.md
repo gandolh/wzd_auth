@@ -1,5 +1,5 @@
 ---
-summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–4 have landed: Ward now authenticates people, answers introspection, and administers apps, grants and accounts. Nothing is decided that is not recorded.
+summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–5 have landed. The API is complete and the client package exists; what is missing is every screen a person would look at. Nothing is decided that is not recorded.
 updated: 2026-09-04
 ---
 
@@ -9,14 +9,16 @@ _2026-09-04._
 
 ## Where things stand
 
-**Waves 1–4 landed 2026-09-04.** Ward is a working identity service: it
-authenticates people, tells apps whether a session is live and what it may do,
-and administers apps, grants and accounts from a break-glass console.
-**444 tests**, including the first that drive the assembled service end to end.
+**Waves 1–5 landed 2026-09-04.** Ward's API is complete: it authenticates
+people, answers introspection, administers the estate from a break-glass
+console, accepts public registration with email verification, and ships
+`@ward/client` so the six apps can consume all of it without writing auth six
+times. **530 tests**, 39 of them in the client and 9 driving the assembled
+service end to end.
 
-What is missing is everything a *person* touches. There is no UI, no public
-registration, no client package and no deploy — so today Ward is usable only by
-something holding a cookie and speaking HTTP.
+What is missing is **every screen a person would look at**, and the deploy. No
+app is wired to Ward yet either — the client package exists but nothing imports
+it.
 
 | Thread | State |
 |---|---|
@@ -29,9 +31,9 @@ something holding a cookie and speaking HTTP.
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **7** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md) · [03](../briefs/done/03-login-refresh.md) · [04](../briefs/done/04-introspection.md) · [05](../briefs/done/05-apps-grants.md) · [06](../briefs/done/06-superuser.md); 9 left in [briefs/todo/](../briefs/todo/) |
-| Service code | The whole API surface: health, JWKS, login/refresh/logout, introspection, and the console's apps, grants and accounts routes |
-| Tests | **444**, vitest at the repo root — 9 of them drive the real `buildApp()` end to end |
+| Briefs done | **9** — 00 · 01 · 02 · 03 · 04 · 05 · 06 · [07](../briefs/done/07-registration-email.md) · [08](../briefs/done/08-client-package.md), all in [briefs/done/](../briefs/done/); 7 left in [briefs/todo/](../briefs/todo/) |
+| Service code | The API is complete — health, JWKS, login/refresh/logout, introspection, the console's apps/grants/accounts routes, and public registration with verification |
+| Tests | **530** — 39 in `@ward/client`, 9 driving the real `buildApp()` end to end |
 | Deploy entry in `vps-deploy` | **None** |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
@@ -55,33 +57,29 @@ something holding a cookie and speaking HTTP.
 
 ## The next move
 
-**Build wave 5 — briefs 07 (public registration and email) and 08
-(`@ward/client`).** Disjoint files, parallel-safe.
+**Build wave 6 — briefs 09 (login page and self-service) and 10 (the console).**
+Both are Vite + React in `ui/`, and the workspace, the design tokens and the one
+contract between them are already in place:
 
-Brief 07 is the largest single chunk of remaining build cost, and it was known
-to be when it was scoped: a mail sender plus a verification flow exist only
-because public registration does. Brief 08 is the smallest and the highest
-leverage — until it exists, no app can consume any of what waves 1–4 built.
+- **Brief 09 owns the router**; **brief 10 exposes the whole console as a single
+  `<ConsoleRoutes />`** from `ui/src/pages/console/routes.tsx`. Neither edits a
+  file the other owns to add a screen.
+- **`ui/src/tokens.css` carries the names; brief 09 owns every value.** Brief 10
+  consumes names only, and the console re-points them under
+  `data-ward-surface="console"` — a **safety** property, not a style choice,
+  since brief 10 requires the console to look visibly unlike the login page.
 
-Contracts that bite a caller who assumes otherwise, all recorded in the done
-briefs' outcome notes:
+Two traps that will cost an afternoon each if not read first:
 
-- **`getDb()` is async**, and importing the db module has no side effects by
-  design.
-- **`verifyWardAccessToken(token)` takes no options.** Narrowed after review
-  found the options bag could disable issuer, audience and expiry checking.
-- **`mintAccessToken(subject, sessionId)` takes two arguments** — the session id
-  is the refresh family, minted into the `sid` claim.
-- **`jwksUrl(publicOrigin, apiBasePath)` requires the base path.** Brief 08
-  must pass `"/ward-api"`; the old default resolved to a 404 that would have
-  locked every app out at once.
-- **`NewGrant.grantedBy` is required** — `SUPERUSER_ACTOR` on the console path.
-- **`checkLockout`/`recordFailure`/`clearFailures` take a `LockoutTarget`**, and
-  a new credential surface must add its own `LockoutSurface` member rather than
-  borrowing `"login"`. Brief 07's registration endpoint is such a surface.
-
-`RotationOutcome` also carries a `refresh_raced` variant: treat it exactly like
-`reuse_detected` on the wire, and **never** as an alarm.
+- **Cookie paths are browser-side.** `ward_refresh` is `Path=/ward-api/refresh`
+  and `ward_console` is `Path=/ward-api/console`, but Caddy's `handle_path`
+  strips the prefix, so the Fastify routes are `/refresh` and `/console/*`.
+  Getting this backwards yields a cookie that is never sent — "works in tests,
+  always 401s in production". Vite's dev proxy is configured to mirror the
+  production shape for exactly this reason.
+- **Apps are not seeded.** A fresh database has none, so every registration
+  answers `registration_closed` until the console creates one. Correct, and it
+  looks like a bug.
 
 ## The waves
 
@@ -94,7 +92,7 @@ started until the one before it is verified.
 | ~~2~~ | ~~01 · 02~~ | ~~Schema; signing keys and JWKS~~ **DONE 2026-09-02** |
 | ~~3~~ | ~~03 · 06~~ | ~~Login and refresh rotation; the superuser~~ **DONE 2026-09-04** |
 | ~~4~~ | ~~04 · 05~~ | ~~Introspection; apps, grants and audit~~ **DONE 2026-09-04** |
-| 5 | 07 · 08 | Public registration and email; `@ward/client` |
+| ~~5~~ | ~~07 · 08~~ | ~~Public registration and email; `@ward/client`~~ **DONE 2026-09-04** |
 | 6 | 09 · 10 | Login and self-service UI; the console |
 | 7 | 11 | Deploy — vps-deploy project and Caddy routes |
 | 8 | 13 · 14 · 15 | Atrium, newspapper and prm cut over |
