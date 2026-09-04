@@ -1,0 +1,153 @@
+/*
+ * Ward's design tokens.
+ *
+ * **Brief 09 owns these values and may change any of them.** What is fixed is
+ * the set of *names*, because brief 10's console is built in parallel against
+ * them — consume the names, and if you need a new one, add it here rather than
+ * hard-coding a colour next to a component.
+ *
+ * ---------------------------------------------------------------------------
+ * The intent, from brief 09: "a door, not a lobby."
+ *
+ * Ward interrupts somebody who was on their way somewhere else. Atrium's
+ * Reading Room and newspapper's Mechanical are strongly-designed and nothing
+ * alike, and the recorded cost of one central login page is that both hand
+ * their sign-in moment to this third identity. A page that tries to be
+ * memorable makes that seam worse; a page that is quiet, fast and obviously
+ * a threshold makes it shorter.
+ *
+ * So: near-monochrome, one accent used once per screen, generous vertical
+ * rhythm, and no illustration. It should read as infrastructure that respects
+ * you, not as a product introducing itself.
+ * ---------------------------------------------------------------------------
+ */
+
+:root {
+  /* Surfaces — warm-neutral rather than blue-grey, so it sits beside both
+     atrium's paper and newspapper's ink without arguing with either. */
+  --ward-bg: #f7f6f3;
+  --ward-surface: #ffffff;
+  --ward-surface-sunken: #efeeea;
+  --ward-border: #d9d7d0;
+  --ward-border-strong: #b4b1a7;
+
+  /* Text */
+  --ward-text: #1c1b18;
+  --ward-text-muted: #5f5c55;
+  --ward-text-faint: #8a867d;
+
+  /* One accent. Deep and desaturated: a threshold, not a call to action. */
+  --ward-accent: #3c4a3e;
+  --ward-accent-hover: #2c372e;
+  --ward-accent-text: #f7f6f3;
+
+  /* States. `danger` is for destructive confirmations, not for form errors —
+     a wrong password is ordinary and should not read as an alarm. */
+  --ward-danger: #8c2f22;
+  --ward-danger-surface: #fbeae7;
+  --ward-notice: #6b5410;
+  --ward-notice-surface: #fdf4dc;
+
+  /* Type. A system stack on purpose: a webfont on the login path is a render
+     block on the one page whose whole job is to be fast, and this page is
+     seen for four seconds. */
+  --ward-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --ward-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas,
+    monospace;
+
+  --ward-text-xs: 0.75rem;
+  --ward-text-sm: 0.875rem;
+  --ward-text-base: 1rem;
+  --ward-text-lg: 1.25rem;
+  --ward-text-xl: 1.75rem;
+
+  /* Spacing — a 4px base, because forms live or die on consistent gaps. */
+  --ward-space-1: 0.25rem;
+  --ward-space-2: 0.5rem;
+  --ward-space-3: 0.75rem;
+  --ward-space-4: 1rem;
+  --ward-space-6: 1.5rem;
+  --ward-space-8: 2rem;
+  --ward-space-12: 3rem;
+
+  --ward-radius: 6px;
+  --ward-radius-lg: 10px;
+
+  /* Shadows, barely. Depth here would make a door look like a dialog. */
+  --ward-shadow: 0 1px 2px rgb(28 27 24 / 6%), 0 1px 1px rgb(28 27 24 / 4%);
+  --ward-shadow-lg: 0 4px 16px rgb(28 27 24 / 8%);
+
+  --ward-focus: 0 0 0 3px rgb(60 74 62 / 28%);
+  --ward-max-width: 26rem;
+}
+
+/*
+ * The console deliberately does NOT look like the login page.
+ *
+ * Brief 10: "Make it visibly *not* the ordinary login page; someone reaching
+ * for break-glass should know they have." That is a safety property, not a
+ * style preference — the console is superuser-only, every route on it changes
+ * authority, and there is exactly one credential for it that cannot be
+ * revoked or rotated without a redeploy. It should feel like a different
+ * building.
+ *
+ * Scope this by putting `data-ward-surface="console"` on a wrapper; the tokens
+ * below re-point the same names, so components need no console-specific code.
+ */
+[data-ward-surface="console"] {
+  --ward-bg: #17181a;
+  --ward-surface: #202225;
+  --ward-surface-sunken: #121314;
+  --ward-border: #34373b;
+  --ward-border-strong: #4c5055;
+
+  --ward-text: #e8e6e1;
+  --ward-text-muted: #a2a09a;
+  --ward-text-faint: #75736d;
+
+  --ward-accent: #b8894a;
+  --ward-accent-hover: #cb9a58;
+  --ward-accent-text: #17181a;
+
+  --ward-danger: #e0705c;
+  --ward-danger-surface: #34211d;
+  --ward-notice: #d8b25e;
+  --ward-notice-surface: #302915;
+
+  --ward-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  --ward-shadow-lg: 0 8px 28px rgb(0 0 0 / 50%);
+  --ward-focus: 0 0 0 3px rgb(184 137 74 / 32%);
+  --ward-max-width: 72rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--ward-bg);
+  color: var(--ward-text);
+  font-family: var(--ward-font);
+  font-size: var(--ward-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Never remove a focus ring; this is a keyboard-first form surface. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ward-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
