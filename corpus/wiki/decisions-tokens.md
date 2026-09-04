@@ -1,6 +1,6 @@
 ---
-summary: The locked calls about sessions and tokens — the short-lived signed access token, the opaque rotating refresh token, introspection-with-cache as the revocation mechanism, why there is no JWT denylist, EdDSA signing held by Ward alone, and the two lifetimes that define the logout delay.
-updated: 2026-09-01
+summary: The locked calls about sessions and tokens — the short-lived signed access token, the opaque rotating refresh token, introspection-with-cache as the revocation mechanism, why there is no JWT denylist, EdDSA signing held by Ward alone, the two lifetimes that define the logout delay, and the calls settled once these were built: the absolute family lifetime, logout revoking rather than deleting, and the sid claim that makes revocation per-session.
+updated: 2026-09-04
 ---
 
 # Decisions — tokens and sessions
@@ -93,3 +93,86 @@ threat it exists for, and 30 seconds is a reasonable answer to it.
 
 15 minutes sits inside the 5–15 minute range current practice recommends, with
 anything over 60 minutes said to need explicit justification.
+
+## A refresh family's 30 days is absolute, not sliding
+_2026-09-04, brief 03_ — `R2` inherits `R1`'s `expires_at`. The 30 days runs
+from **login**, not from the most recent rotation, so a family dies 30 days
+after it was born however often it is used.
+
+[decisions-tokens.md](./decisions-tokens.md) says "30-day rotating refresh" and
+does not say which, so this resolves it in the bounded direction.
+
+**Rejected: a sliding expiry**, which is the more common implementation and is
+friendlier — nobody active ever re-authenticates. It was rejected because it
+makes a family **immortal for as long as anyone keeps rotating it**, and the
+party most likely to rotate quietly every fourteen minutes forever is a thief.
+The reuse alarm only fires when the *victim* returns, and a victim who has
+stopped using the app never returns. A sliding window therefore hands unbounded
+persistence to exactly the party the rotation scheme exists to catch.
+
+The cost is accepted and is real: an active person re-enters their password
+about once a month. Reversing it is one argument at one call site
+(`completeRotation`), so this is cheap to revisit — but it should be revisited
+deliberately, not discovered.
+
+## Logout revokes the family; it does not delete rows
+_2026-09-04, brief 03_ — `POST /logout` marks the family
+`revoked_reason = 'logout'` rather than deleting it. Nothing usable remains —
+`claimRefreshToken` cannot match a revoked row — and the natural-expiry sweep
+removes it later.
+
+This is a **deliberate departure from brief 03's literal wording**, which said
+"deletes the refresh row". Recorded because the brief's text and the code
+disagree and a future reader will otherwise think one of them is a mistake.
+
+**Rejected: `DELETE`.** The `revoked_reason` column exists precisely so the
+console can tell an ordinary logout from a rotation from a theft signal, and
+deleting the row erases exactly what an operator investigating a stolen session
+needs to see. "Leaves no refresh row" was read as "leaves no *usable* row",
+which is the property the acceptance criterion was actually after.
+
+## The access token carries a `sid` claim, so revocation is per-session
+_2026-09-04, after brief 04_ — The access token carries the **refresh family's
+id** as `sid`, and introspection asks whether *that family* is live rather than
+whether the account holds any live family at all.
+
+Brief 04 found the gap and documented it instead of overclaiming: `jti` is a
+fresh UUID that is **never persisted**, and no other claim named the family, so
+a revoked family could not be linked to a still-valid access token. The
+strongest sound statement available then was *an account with no live refresh
+token has no live session* — which catches logout on a single-session account,
+reuse sweeps, admin revoke-all, lapsed families, disabled and deleted accounts,
+and misses exactly one case: **one family revoked while another stays live.**
+
+That case is the whole reason the self-service UI exists.
+[decisions.md](./decisions.md) justifies it on one feature — *"sign out my other
+devices is the only self-serve response available to someone who suspects their
+session was stolen"* — and without `sid` the signed-out device kept
+introspecting `active: true` for its full 15 minutes, against an attacker who by
+hypothesis is actively using the token. So this was closed rather than accepted.
+
+**This does not contradict [the no-permissions-in-claims rule](./decisions-tokens.md).**
+That rule exists because a token minted before a grant changed would carry
+**stale authority** for its whole lifetime. A session id cannot go stale that
+way: it names a row, and the row's liveness is looked up fresh on every
+introspection. `sid` carries identity, not authority — and it is the standard
+OIDC name for exactly this, which is why it was not invented here.
+
+**Required, not optional**, in both the claim and the mint parameter. An
+optional one lets a call site mint a silently unlinkable token, and introspection
+then has to decide what an absent `sid` means — where the only safe answer is
+"not live", which turns a forgotten argument into an outage instead of a
+compile error. Nothing is deployed, so requiring it costs nothing.
+
+**Rejected: an `iat`-ordering heuristic** — refusing any token issued later than
+the newest live refresh row. Brief 04 considered and declined it, and the
+reasoning is worth keeping: it catches roughly half the two-family orderings, it
+rests on an invariant in a file that brief did not own, and its failure mode is
+**spuriously signing a legitimate person out of six apps**. Half a fix presented
+as a whole one, at the cost of a possible owner lockout.
+
+`hasLiveFamily` also requires the family's row to **belong to the subject**.
+That pairing cannot be forged through `/introspect`, which reads `sub` and `sid`
+off the same verified token — but the safety was living in the caller, and
+brief 09's "sign out my other devices" is precisely the shape that pairs a
+subject from a session with a family id from a request.

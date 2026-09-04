@@ -1,5 +1,5 @@
 ---
-summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–3 have landed: the scaffold, the schema, EdDSA signing, login with refresh rotation, and the break-glass superuser. Nothing is decided that is not recorded.
+summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–4 have landed: Ward now authenticates people, answers introspection, and administers apps, grants and accounts. Nothing is decided that is not recorded.
 updated: 2026-09-04
 ---
 
@@ -9,13 +9,14 @@ _2026-09-04._
 
 ## Where things stand
 
-**Waves 1–3 landed 2026-09-04.** Ward can authenticate somebody. The scaffold,
-six tables, Ed25519 signing with a published JWKS, 15-minute access tokens,
-`/login` · `/refresh` · `/logout` with rotating refresh tokens and reuse
-detection, and the environment-only superuser with its console session.
-**315 tests.** No introspection yet, so no app can consume any of it — that is
-brief 04, and it is the next thing that makes Ward useful to anything but
-itself.
+**Waves 1–4 landed 2026-09-04.** Ward is a working identity service: it
+authenticates people, tells apps whether a session is live and what it may do,
+and administers apps, grants and accounts from a break-glass console.
+**444 tests**, including the first that drive the assembled service end to end.
+
+What is missing is everything a *person* touches. There is no UI, no public
+registration, no client package and no deploy — so today Ward is usable only by
+something holding a cookie and speaking HTTP.
 
 | Thread | State |
 |---|---|
@@ -28,9 +29,9 @@ itself.
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **5** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md) · [03](../briefs/done/03-login-refresh.md) · [06](../briefs/done/06-superuser.md); 11 left in [briefs/todo/](../briefs/todo/) |
-| Service code | Boots, migrates, and authenticates: `/health`, `/.well-known/jwks.json`, `/login`, `/refresh`, `/logout`, `/console/login` |
-| Tests | **315**, vitest at the repo root |
+| Briefs done | **7** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md) · [03](../briefs/done/03-login-refresh.md) · [04](../briefs/done/04-introspection.md) · [05](../briefs/done/05-apps-grants.md) · [06](../briefs/done/06-superuser.md); 9 left in [briefs/todo/](../briefs/todo/) |
+| Service code | The whole API surface: health, JWKS, login/refresh/logout, introspection, and the console's apps, grants and accounts routes |
+| Tests | **444**, vitest at the repo root — 9 of them drive the real `buildApp()` end to end |
 | Deploy entry in `vps-deploy` | **None** |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
@@ -54,34 +55,33 @@ itself.
 
 ## The next move
 
-**Build wave 4 — briefs 04 (introspection) and 05 (apps, grants and audit).**
-Their files are disjoint, but **their acceptance criteria are mutually
-dependent**: brief 04 must prove a grant added through the console appears in the
-next introspection, and brief 05 must prove disabling an account ends its live
-sessions end to end. Neither can do that alone, so wave 4 runs as three steps —
-both briefs in parallel with unit tests, then a dedicated cross-layer
-integration chunk. That chunk also closes the gap below.
+**Build wave 5 — briefs 07 (public registration and email) and 08
+(`@ward/client`).** Disjoint files, parallel-safe.
 
-Brief 04 additionally owes brief 06's most important test: **a superuser console
-token presented to `/introspect` must return `active: false`.** There is nothing
-to implement for it — brief 04 needs no superuser branch, and adding one would be
-the bypass [decisions-admin.md](./decisions-admin.md) rejected.
+Brief 07 is the largest single chunk of remaining build cost, and it was known
+to be when it was scoped: a mail sender plus a verification flow exist only
+because public registration does. Brief 08 is the smallest and the highest
+leverage — until it exists, no app can consume any of what waves 1–4 built.
 
-Read the outcome notes on the done briefs; four contracts bite a caller who
-assumes otherwise:
+Contracts that bite a caller who assumes otherwise, all recorded in the done
+briefs' outcome notes:
 
-- **`getDb()` is async** — the dynamic import keeps importing the db module
-  side-effect-free.
-- **`verifyWardAccessToken(token)` takes no options**, narrowed after review
-  found the options bag could disable issuer, audience and expiry checking. Mint
-  only through `mintAccessToken(subject)`.
-- **`NewGrant.grantedBy` is required** — `SUPERUSER_ACTOR` for the console path.
-- **`checkLockout`/`recordFailure`/`clearFailures` take a `LockoutTarget`**, not
-  a bare key, and a new credential surface must add its own `LockoutSurface`
-  member rather than borrowing `"login"`.
+- **`getDb()` is async**, and importing the db module has no side effects by
+  design.
+- **`verifyWardAccessToken(token)` takes no options.** Narrowed after review
+  found the options bag could disable issuer, audience and expiry checking.
+- **`mintAccessToken(subject, sessionId)` takes two arguments** — the session id
+  is the refresh family, minted into the `sid` claim.
+- **`jwksUrl(publicOrigin, apiBasePath)` requires the base path.** Brief 08
+  must pass `"/ward-api"`; the old default resolved to a 404 that would have
+  locked every app out at once.
+- **`NewGrant.grantedBy` is required** — `SUPERUSER_ACTOR` on the console path.
+- **`checkLockout`/`recordFailure`/`clearFailures` take a `LockoutTarget`**, and
+  a new credential surface must add its own `LockoutSurface` member rather than
+  borrowing `"login"`. Brief 07's registration endpoint is such a surface.
 
-`RotationOutcome` also gained a `refresh_raced` variant; treat it exactly like
-`reuse_detected` on the wire and **never** as an alarm.
+`RotationOutcome` also carries a `refresh_raced` variant: treat it exactly like
+`reuse_detected` on the wire, and **never** as an alarm.
 
 ## The waves
 
@@ -93,7 +93,7 @@ started until the one before it is verified.
 | ~~1~~ | ~~00~~ | ~~Scaffold, rename, env contract~~ **DONE 2026-09-02** |
 | ~~2~~ | ~~01 · 02~~ | ~~Schema; signing keys and JWKS~~ **DONE 2026-09-02** |
 | ~~3~~ | ~~03 · 06~~ | ~~Login and refresh rotation; the superuser~~ **DONE 2026-09-04** |
-| 4 | 04 · 05 | Introspection; apps, grants and audit |
+| ~~4~~ | ~~04 · 05~~ | ~~Introspection; apps, grants and audit~~ **DONE 2026-09-04** |
 | 5 | 07 · 08 | Public registration and email; `@ward/client` |
 | 6 | 09 · 10 | Login and self-service UI; the console |
 | 7 | 11 | Deploy — vps-deploy project and Caddy routes |
@@ -156,16 +156,18 @@ also the single largest source of remaining work.
 - The research in [landscape.md](./landscape.md) is a survey of published
   comparisons, not hands-on evaluation. Nothing has been installed or measured.
   It documents a road not taken and should not be re-opened casually.
-- **Five briefs of sixteen are built.** 315 tests cover the schema invariants,
-  the token surface including the alg-confusion cases, and the login and refresh
-  paths. What is untested is what is unwritten: no introspection, no UI, no
-  deploy.
-- **No integration test crosses the layers, and this is now the biggest gap.**
-  Every test builds its own Fastify instance or opens `:memory:` directly.
-  Nothing exercises the real `buildApp()` against a real database and a real key
-  through a full sign-in → introspect → revoke cycle. Wave 4's third step exists
-  to fix exactly this, and until it lands the test count overstates the
-  confidence.
+- **Seven briefs of sixteen are built**, and the API is feature-complete for a
+  machine caller. Nothing a person can look at exists yet.
+- **The integration gap is closed but narrow.** Nine tests now drive the real
+  `buildApp()` against a real database and a real key, which is what found the
+  two behaviours noted below. But they cover the happy paths and the revocation
+  cases — not the mail flow, not a browser, and nothing under concurrency beyond
+  the one refresh race.
+- **Two behaviours only the integration suite could see**, both recorded in
+  code where they surfaced: the 10-second refresh race carve-out swallows a
+  replay that fires too soon, and `session.refresh_denied` is effectively
+  unreachable for the everyday disabled account because `/refresh` peeks the
+  token's session before the rotation that would write the row.
 - **Two review passes per wave have each found bugs the gates could not.** Every
   wave so far shipped at least one Critical or Important defect that typecheck,
   lint and a green suite all missed — the signing key being committable, the WAL

@@ -1,5 +1,5 @@
 ---
-summary: The locked engineering calls made while building — the raw better-sqlite3 driver and why Knex was rejected, scrypt over argon2id, the loopback bind default, the WAL checkpoint that makes a database backup honest, the absolute refresh-family lifetime, and why the lockout is not keyed on request.ip.
+summary: The locked engineering calls made while building — the raw better-sqlite3 driver and why Knex was rejected, static-import migrations, scrypt over argon2id, the loopback bind default, the WAL checkpoint that makes a database backup honest, why the lockout is not keyed on request.ip, and integration tests that drive the real service. Session mechanics settled during the build live in decisions-tokens.md.
 updated: 2026-09-04
 ---
 
@@ -13,8 +13,13 @@ that were rejected.
 This page exists because [decisions.md](./decisions.md) is a design record and
 was already near the corpus line cap when the first brief landed. Foundational
 scope stays there; accounts in [decisions-accounts.md](./decisions-accounts.md),
-sessions in [decisions-tokens.md](./decisions-tokens.md), privilege in
-[decisions-admin.md](./decisions-admin.md).
+privilege in [decisions-admin.md](./decisions-admin.md).
+
+**Session mechanics settled during the build live in
+[decisions-tokens.md](./decisions-tokens.md), not here** — the absolute refresh
+family lifetime, logout revoking rather than deleting, and the `sid` claim. They
+are build-time calls, but a reader asking "how do sessions work" should find all
+of it on one page rather than having to know which half was decided when.
 
 ## Raw `better-sqlite3`, not Knex
 _2026-09-02, brief 00_ — Ward talks to SQLite through the driver directly.
@@ -98,43 +103,6 @@ Recorded as a decision rather than a bug fix because the tempting cleanup —
 "`process.exit` closes everything anyway, drop the redundant `close()`" — is
 wrong for a reason nothing in the code makes visible.
 
-## A refresh family's 30 days is absolute, not sliding
-_2026-09-04, brief 03_ — `R2` inherits `R1`'s `expires_at`. The 30 days runs
-from **login**, not from the most recent rotation, so a family dies 30 days
-after it was born however often it is used.
-
-[decisions-tokens.md](./decisions-tokens.md) says "30-day rotating refresh" and
-does not say which, so this resolves it in the bounded direction.
-
-**Rejected: a sliding expiry**, which is the more common implementation and is
-friendlier — nobody active ever re-authenticates. It was rejected because it
-makes a family **immortal for as long as anyone keeps rotating it**, and the
-party most likely to rotate quietly every fourteen minutes forever is a thief.
-The reuse alarm only fires when the *victim* returns, and a victim who has
-stopped using the app never returns. A sliding window therefore hands unbounded
-persistence to exactly the party the rotation scheme exists to catch.
-
-The cost is accepted and is real: an active person re-enters their password
-about once a month. Reversing it is one argument at one call site
-(`completeRotation`), so this is cheap to revisit — but it should be revisited
-deliberately, not discovered.
-
-## Logout revokes the family; it does not delete rows
-_2026-09-04, brief 03_ — `POST /logout` marks the family
-`revoked_reason = 'logout'` rather than deleting it. Nothing usable remains —
-`claimRefreshToken` cannot match a revoked row — and the natural-expiry sweep
-removes it later.
-
-This is a **deliberate departure from brief 03's literal wording**, which said
-"deletes the refresh row". Recorded because the brief's text and the code
-disagree and a future reader will otherwise think one of them is a mistake.
-
-**Rejected: `DELETE`.** The `revoked_reason` column exists precisely so the
-console can tell an ordinary logout from a rotation from a theft signal, and
-deleting the row erases exactly what an operator investigating a stolen session
-needs to see. "Leaves no refresh row" was read as "leaves no *usable* row",
-which is the property the acceptance criterion was actually after.
-
 ## The lockout is keyed on the forwarded address, never `request.ip`
 _2026-09-04, brief 03_ — `lockoutKeyFor` uses the socket peer when it is not
 loopback, and otherwise the **last** `x-forwarded-for` element.
@@ -155,3 +123,22 @@ The header is honoured **only when the peer is loopback** — a direct connectio
 cannot talk its way into a different bucket. Also rejected, upstream of all of
 this: keying on **username**, which lets a stranger lock a real person out of
 their own account indefinitely.
+
+## Integration tests drive the real `buildApp`, not a hand-built instance
+_2026-09-04_ — `api/src/integration/` uses the assembled service: real
+`buildApp()`, a real on-disk database, a real generated Ed25519 key, over
+`app.inject`.
+
+Recorded because the alternative is so tempting and so much cheaper. Every test
+before this built its own Fastify instance or opened `:memory:` directly, and
+the count — 429 at the time — overstated the confidence: nothing had run a full
+sign-in → introspect → revoke cycle through the real thing.
+
+It paid for itself on the first run, finding two behaviours no per-module test
+can reach: the **10-second refresh race carve-out swallows a replay that fires
+too soon** (a naive login → refresh → replay is treated as two tabs racing, so
+nothing is revoked — the unit tests call `rotateRefreshToken` directly in
+whatever order they like and never hit it), and **`session.refresh_denied` is
+effectively unreachable** for the everyday disabled account, because `/refresh`
+peeks `sessionForRefreshToken` — which already excludes a disabled account —
+before the rotation that would write the row.
