@@ -1,5 +1,5 @@
 ---
-summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and wave 1 (the scaffold) has landed. Nothing is decided that is not recorded.
+summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–2 have landed: the scaffold, the schema, and EdDSA signing with JWKS. Nothing is decided that is not recorded.
 updated: 2026-09-02
 ---
 
@@ -9,10 +9,11 @@ _2026-09-02._
 
 ## Where things stand
 
-**Wave 1 landed 2026-09-02.** The repo holds a corpus, a README, and the
-scaffold: three npm workspaces, a fail-closed environment contract,
-better-sqlite3 with a static-import migration runner, and `GET /health` bound to
-loopback. No schema, no auth, no UI, no deploy.
+**Waves 1–2 landed 2026-09-02.** The repo holds a corpus, a README, and a
+service that boots: three npm workspaces, a fail-closed environment contract,
+six tables in a baseline migration, Ed25519 signing with a published JWKS, and
+15-minute access tokens. **125 tests.** No login route yet, no introspection,
+no UI, no deploy — those are waves 3–7.
 
 | Thread | State |
 |---|---|
@@ -25,9 +26,9 @@ loopback. No schema, no auth, no UI, no deploy.
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **1** — [00-scaffold](../briefs/done/00-scaffold.md); 15 left in [briefs/todo/](../briefs/todo/) |
-| Service code | **The scaffold only** — `api/` boots and answers `/health` |
-| Tests | **None.** No runner is wired; brief 01 should land one |
+| Briefs done | **3** — [00](../briefs/done/00-scaffold.md) · [01](../briefs/done/01-schema.md) · [02](../briefs/done/02-signing-keys.md); 13 left in [briefs/todo/](../briefs/todo/) |
+| Service code | Boots, migrates, answers `/health` and `/.well-known/jwks.json`, mints and verifies access tokens |
+| Tests | **125**, vitest at the repo root |
 | Deploy entry in `vps-deploy` | **None** |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
@@ -51,15 +52,22 @@ loopback. No schema, no auth, no UI, no deploy.
 
 ## The next move
 
-**Build wave 2 — briefs 01 (schema) and 02 (signing keys).** They own disjoint
-files and can run in parallel. Both consume contracts pinned by brief 00; the
-outcome note on [00-scaffold](../briefs/done/00-scaffold.md) carries them, and
-the one most likely to surprise is that **`getDb()` is async** — the dynamic
-import is what keeps importing the db module side-effect-free.
+**Build wave 3 — briefs 03 (login and refresh rotation) and 06 (the
+superuser).** Disjoint files, parallel-safe.
 
-Brief 01 should also land the test runner. Brief 00 verified its loopback bind
-and fail-closed boot by hand, and nothing currently guards either against
-regression.
+Read the outcome notes on the three done briefs first: they carry the consumable
+contracts, and three of them will bite a caller who assumes otherwise.
+
+- **`getDb()` is async.** The dynamic import is what keeps importing the db
+  module side-effect-free.
+- **`verifyWardAccessToken(token)` takes no options.** It was deliberately
+  narrowed after review found the options bag could disable issuer, audience and
+  expiry checking. Mint through `mintAccessToken(subject)` and nothing else.
+- **`NewGrant.grantedBy` is required.** Use `SUPERUSER_ACTOR` for the
+  console path, the acting account's subject otherwise.
+
+Brief 03's rotation rests on `claimRefreshToken` and `revokeFamily` each being a
+single atomic `UPDATE ... RETURNING` — do not decompose either into read-then-write.
 
 ## The waves
 
@@ -69,7 +77,7 @@ started until the one before it is verified.
 | Wave | Briefs | What lands |
 |---|---|---|
 | ~~1~~ | ~~00~~ | ~~Scaffold, rename, env contract~~ **DONE 2026-09-02** |
-| 2 | 01 · 02 | Schema; signing keys and JWKS |
+| ~~2~~ | ~~01 · 02~~ | ~~Schema; signing keys and JWKS~~ **DONE 2026-09-02** |
 | 3 | 03 · 06 | Login and refresh rotation; the superuser |
 | 4 | 04 · 05 | Introspection; apps, grants and audit |
 | 5 | 07 · 08 | Public registration and email; `@ward/client` |
@@ -134,9 +142,12 @@ also the single largest source of remaining work.
 - The research in [landscape.md](./landscape.md) is a survey of published
   comparisons, not hands-on evaluation. Nothing has been installed or measured.
   It documents a road not taken and should not be re-opened casually.
-- **One brief of sixteen is built, and nothing is tested.** The scaffold boots
-  and was verified by hand, but no test runner is wired, so every property it
-  established is unguarded against regression. Fifteen briefs — all of the auth
-  itself — remain intent only.
+- **Three briefs of sixteen are built.** 125 tests cover the schema invariants
+  and the token surface, including the alg-confusion cases. What is untested is
+  what is unwritten: there is no login route, no introspection, no UI and no
+  deploy, so nothing has yet been exercised end to end by a real client.
+- **No integration test crosses the layers.** Every test is a unit test against
+  `:memory:` or a generated keypair. The first real login will be the first time
+  the schema and the token layer meet.
 - Two briefs change **other repos'** locked decisions and owe revision notes
   there: 13 (atrium D30 and D35) and 14 (newspapper's three security calls).
