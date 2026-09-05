@@ -22,15 +22,15 @@
  * the whole value of this screen is that the routine one does not bury the
  * alarm. The alarm is the only red row in the log.
  *
- * ## The endpoint does not exist yet
+ * ## Paging is keyset, not offset
  *
- * There is no `GET /console/audit` in the API. Everything behind it does exist —
- * `api/src/db/audit-log.ts` already has `listAudit`, `countAudit` and keyset
- * pagination — so what is missing is a route behind the console guard, plus two
- * fields on its query. Rather than ship a screen that shows an empty log and
- * looks like a quiet estate, this says precisely what is missing and what it
- * would take. Everything else here is finished and starts working the moment
- * the route lands.
+ * `GET /console/audit` grows at the head, so an offset-paged second page
+ * shifts under the reader every time anything happens elsewhere in the
+ * estate. `nextBeforeId` in the response is the cursor for the next older
+ * page, `null` when the page just fetched was the last one. Changing a filter
+ * resets to the first page; the "Older" control moves forward through
+ * `nextBeforeId`, and "Newer" pops back through a small stack of the cursors
+ * already visited.
  */
 
 import { useState } from "react";
@@ -60,12 +60,26 @@ const EMPTY: Draft = {
   action: "",
 };
 
-function toQuery(draft: Draft): AuditQuery {
-  const query: AuditQuery = { limit: 200 };
-  if (draft.actorKind !== "") query.actorKind = draft.actorKind;
+const ACTOR_KINDS = ["superuser", "account", "system"] as const;
+type ActorKind = (typeof ACTOR_KINDS)[number];
+function isActorKind(value: string): value is ActorKind {
+  return (ACTOR_KINDS as readonly string[]).includes(value);
+}
+
+const TARGET_KINDS = ["user", "app", "grant", "session", "token"] as const;
+type TargetKind = (typeof TARGET_KINDS)[number];
+function isTargetKind(value: string): value is TargetKind {
+  return (TARGET_KINDS as readonly string[]).includes(value);
+}
+
+/** The filters, without a page cursor — that is layered on separately below. */
+function toFilters(draft: Draft): Omit<AuditQuery, "beforeId" | "limit"> {
+  const query: Omit<AuditQuery, "beforeId" | "limit"> = {};
+  if (draft.actorKind !== "" && isActorKind(draft.actorKind)) query.actorKind = draft.actorKind;
   if (draft.actorLabel !== "") query.actorLabel = draft.actorLabel;
   if (draft.actorSubject !== "") query.actorSubject = draft.actorSubject;
-  if (draft.targetKind !== "") query.targetKind = draft.targetKind;
+  if (draft.targetKind !== "" && isTargetKind(draft.targetKind))
+    query.targetKind = draft.targetKind;
   if (draft.targetId !== "") query.targetId = draft.targetId;
   if (draft.action !== "") query.action = draft.action;
   return query;
@@ -73,13 +87,34 @@ function toQuery(draft: Draft): AuditQuery {
 
 export function AuditScreen(): React.JSX.Element {
   const [draft, setDraft] = useState<Draft>(EMPTY);
-  const [applied, setApplied] = useState<AuditQuery>({ limit: 200 });
-  const key = JSON.stringify(applied);
-  const { result } = useConsoleLoad(`audit:${key}`, () => consoleApi.listAudit(applied));
+  const [filters, setFilters] = useState<Omit<AuditQuery, "beforeId" | "limit">>({});
+  // Keyset pagination: a stack of cursors already visited. The first page has
+  // no cursor at all, which is `undefined` here rather than a sentinel number
+  // — `beforeId` genuinely starts at 1, so `0` or `-1` would be a real value
+  // wearing a costume.
+  const [cursors, setCursors] = useState<(number | undefined)[]>([undefined]);
+  const cursor = cursors[cursors.length - 1];
 
-  // `not_found` from this path means the route itself is absent: there is no
-  // row-level 404 on a listing. See `MissingEndpoint` below.
-  const missing = result.state === "failed" && result.code === "not_found";
+  const query: AuditQuery = { ...filters, limit: 200, beforeId: cursor };
+  const key = JSON.stringify(query);
+  const { result } = useConsoleLoad(`audit:${key}`, () => consoleApi.listAudit(query));
+
+  function applyFilters(next: Omit<AuditQuery, "beforeId" | "limit">): void {
+    setFilters(next);
+    setCursors([undefined]);
+  }
+
+  function older(): void {
+    if (result.state !== "ready" || result.data.nextBeforeId === null) return;
+    setCursors((stack) => [...stack, result.data.nextBeforeId ?? undefined]);
+  }
+
+  function newer(): void {
+    setCursors((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
+  }
+
+  const onFirstPage = cursors.length === 1;
+  const hasOlder = result.state === "ready" && result.data.nextBeforeId !== null;
 
   return (
     <>
@@ -97,7 +132,7 @@ export function AuditScreen(): React.JSX.Element {
         className="wc-form wc-form-row"
         onSubmit={(event) => {
           event.preventDefault();
-          setApplied(toQuery(draft));
+          applyFilters(toFilters(draft));
         }}
       >
         <p className="wc-field">
@@ -184,7 +219,7 @@ export function AuditScreen(): React.JSX.Element {
             className="wc-btn"
             onClick={() => {
               setDraft(EMPTY);
-              setApplied({ limit: 200 });
+              applyFilters({});
             }}
           >
             Clear
@@ -198,11 +233,9 @@ export function AuditScreen(): React.JSX.Element {
         why the actor filter offers a kind: a console mutation carries no subject to match on.
       </p>
 
-      {missing ? <MissingEndpoint /> : null}
-
       {result.state === "loading" ? <p className="wc-lede">Reading the log…</p> : null}
 
-      {result.state === "failed" && !missing ? (
+      {result.state === "failed" ? (
         <Alert tone="error" title="The log did not load" takeFocus>
           {result.message}
         </Alert>
@@ -217,45 +250,34 @@ export function AuditScreen(): React.JSX.Element {
             </p>
           </Empty>
         ) : (
-          <AuditTable entries={result.data.entries} total={result.data.total} />
+          <AuditTable
+            entries={result.data.entries}
+            total={result.data.total}
+            onFirstPage={onFirstPage}
+            hasOlder={hasOlder}
+            onOlder={older}
+            onNewer={newer}
+          />
         )
       ) : null}
     </>
   );
 }
 
-/**
- * Said out loud rather than hidden behind an empty table.
- *
- * An audit screen that shows nothing looks like an estate where nothing has
- * happened, which is the single most misleading thing this console could tell
- * an operator who came here because something did.
- */
-function MissingEndpoint(): React.JSX.Element {
-  return (
-    <Alert tone="notice" title="Ward does not serve the audit log yet" takeFocus>
-      The API has no <span className="wc-id">GET /console/audit</span>. This screen — the filters,
-      the ordering and the treatment that keeps{" "}
-      <span className="wc-id">session.reuse_detected</span> distinct from{" "}
-      <span className="wc-id">session.refresh_raced</span> — is finished and will populate the
-      moment that route exists. What it needs: a handler behind{" "}
-      <span className="wc-id">requireConsoleSession</span> that calls the existing{" "}
-      <span className="wc-id">listAudit</span> / <span className="wc-id">countAudit</span> in{" "}
-      <span className="wc-id">api/src/db/audit-log.ts</span>, camel-cases the row and parses{" "}
-      <span className="wc-id">detail</span>, plus <span className="wc-id">actorKind</span> and{" "}
-      <span className="wc-id">actorLabel</span> added to <span className="wc-id">AuditQuery</span> —
-      without those two, every console mutation is unfilterable by actor, because they are all
-      written with a null <span className="wc-id">actor_subject</span>.
-    </Alert>
-  );
-}
-
 function AuditTable({
   entries,
   total,
+  onFirstPage,
+  hasOlder,
+  onOlder,
+  onNewer,
 }: {
   entries: AuditRowView[];
   total: number;
+  onFirstPage: boolean;
+  hasOlder: boolean;
+  onOlder: () => void;
+  onNewer: () => void;
 }): React.JSX.Element {
   const alarms = entries.filter((entry) => presentAuditAction(entry.action).isAlarm).length;
 
@@ -273,8 +295,8 @@ function AuditTable({
       <div className="wc-table-scroll">
         <table className="wc-table">
           <caption>
-            {plural(entries.length, "event", "events")}
-            {entries.length < total ? ` of ${String(total)} in the log` : ""}, newest first.
+            {plural(entries.length, "event", "events")} of {String(total)} in the log
+            {onFirstPage ? "" : " (an older page)"}, newest first within the page.
           </caption>
           <thead>
             <tr>
@@ -291,6 +313,15 @@ function AuditTable({
           </tbody>
         </table>
       </div>
+
+      <p className="wc-row-actions">
+        <button type="button" className="wc-btn" disabled={onFirstPage} onClick={onNewer}>
+          Newer
+        </button>
+        <button type="button" className="wc-btn" disabled={!hasOlder} onClick={onOlder}>
+          Older
+        </button>
+      </p>
     </>
   );
 }

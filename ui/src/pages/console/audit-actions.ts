@@ -70,6 +70,23 @@ const ACTIONS: Record<string, Omit<AuditActionPresentation, "isAlarm">> = {
     label: "Refresh refused",
     explanation: "A refresh token was rejected — expired, revoked, or never issued.",
   },
+  "session.revoke": {
+    severity: "authority",
+    label: "Session ended",
+    explanation: "One device's session was ended from the console.",
+  },
+  "session.revoke_all": {
+    severity: "authority",
+    label: "All sessions ended",
+    explanation:
+      "Every live session for the account was ended in one call from the console. The account itself — its grants, password and email — was untouched.",
+  },
+  "session.revoke_others": {
+    severity: "authority",
+    label: "Other sessions signed out",
+    explanation:
+      "The account holder ended every session but the one they used to do it — the self-service response to a suspected stolen session.",
+  },
 
   // ---- The break-glass credential itself. --------------------------------
   "console.login": {
@@ -120,6 +137,18 @@ const ACTIONS: Record<string, Omit<AuditActionPresentation, "isAlarm">> = {
     explanation:
       "The operator set a new password and every live session was revoked with it. The password itself is not recorded anywhere.",
   },
+  "user.password_change": {
+    severity: "authority",
+    label: "Password changed (self-service)",
+    explanation:
+      "The account holder changed their own password after verifying the old one. Every other session ended with it; the session that made the change was rotated onto a fresh credential rather than revoked.",
+  },
+  "user.password_change_failed": {
+    severity: "notice",
+    label: "Password change refused",
+    explanation:
+      "The account holder tried to change their own password but gave the wrong current one. One wrong guess is not a theft signal by itself — a run of them against one account is worth a second look.",
+  },
   "app.create": {
     severity: "authority",
     label: "App registered",
@@ -160,13 +189,23 @@ export const AUDIT_ACTION_GROUPS: { group: string; actions: string[] }[] = [
       "session.refresh_denied",
       "session.refresh_raced",
       "session.reuse_detected",
+      "session.revoke",
+      "session.revoke_all",
+      "session.revoke_others",
     ],
   },
   { group: "Console", actions: ["console.login", "console.login.failed", "console.logout"] },
   { group: "Grants", actions: ["grant.create", "grant.revoke", "grant.revoke_app"] },
   {
     group: "Accounts",
-    actions: ["user.create", "user.disable", "user.enable", "user.password_rotate"],
+    actions: [
+      "user.create",
+      "user.disable",
+      "user.enable",
+      "user.password_rotate",
+      "user.password_change",
+      "user.password_change_failed",
+    ],
   },
   { group: "Apps", actions: ["app.create", "app.update", "app.registration", "app.delete"] },
 ];

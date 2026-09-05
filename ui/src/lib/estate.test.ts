@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ESTATE_APPS, ESTATE_ROOTS, appName, rootName } from "./estate.js";
+import { ESTATE_APPS, ESTATE_ROOTS, appName, rootName, slugForRoot } from "./estate.js";
 
 /**
  * The estate registry is data, so the tests are consistency checks rather than
@@ -39,5 +39,16 @@ describe("estate", () => {
     // use to somebody signing up than "Unknown app".
     expect(appName("some-new-app")).toBe("some-new-app");
     expect(rootName("some-new-app")).toBe("some-new-app");
+  });
+
+  it("maps every root to the same row's slug", () => {
+    for (const app of ESTATE_APPS) {
+      if (app.root === null) continue;
+      expect(slugForRoot(app.root)).toBe(app.slug);
+    }
+  });
+
+  it("has no slug for a root it has never heard of", () => {
+    expect(slugForRoot("some-new-root")).toBeUndefined();
   });
 });

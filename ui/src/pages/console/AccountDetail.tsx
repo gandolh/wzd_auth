@@ -6,8 +6,9 @@
  *
  *  - **Access.** Grants grouped by app, roles as a set. Adding a role and
  *    removing one are a single click each, which the brief asks for by name.
- *  - **Sessions.** What Ward will tell us, which is a count — see the note on
- *    the panel for what is missing and why the buttons are the shape they are.
+ *  - **Sessions.** One row per live device, each with its own revoke, plus a
+ *    single call that ends every one of them at once. Ward still records no
+ *    device name and no address for a family — see the panel's own note.
  *  - **Password.** The only recovery channel an owner-issued account has.
  *  - **State.** Disable and re-enable, with what each one does and does not
  *    bring back written next to the button.
@@ -35,7 +36,7 @@ import { consoleHref } from "./nav.js";
 import { formatWhen, plural } from "./format.js";
 import { describeGrantRevoke, describeGrantWrite, groupGrantsByApp } from "./grant-set.js";
 import { useConsole, useConsoleLoad, useWriter } from "./session.js";
-import { Alert, Confirm, Empty, Panel, TextField, isUnauthorized, messageFor } from "./ui.js";
+import { Alert, Confirm, Empty, Panel, TextField } from "./ui.js";
 
 export function AccountDetailScreen({ subject }: { subject: string }): React.JSX.Element {
   const { basePath } = useConsole();
@@ -72,7 +73,6 @@ type Pending =
   | { kind: "disable" }
   | { kind: "enable" }
   | { kind: "rotate" }
-  | { kind: "endSessions" }
   | { kind: "revokeApp"; appSlug: string; roles: string[] };
 
 function AccountBody({
@@ -135,40 +135,7 @@ function AccountBody({
         reload={reload}
       />
 
-      <Panel
-        title="Sessions"
-        note={
-          <>
-            {liveSessions === 0
-              ? "No live refresh sessions. Nothing is currently signed in as this account."
-              : `${plural(liveSessions, "live refresh session", "live refresh sessions")}. Each one is a sign-in that can keep minting access tokens for up to thirty days.`}
-          </>
-        }
-      >
-        <p className="wc-panel-note">
-          Ward reports a <em>count</em> and no more: there is no endpoint that lists the individual
-          refresh families or revokes one of them, so this console cannot show you which device is
-          which or end just one. What it can do is end them all, which is the answer to a suspected
-          theft.
-        </p>
-        <div className="wc-actions">
-          <button
-            type="button"
-            className="wc-btn"
-            data-tone="danger"
-            disabled={writer.busy || liveSessions === 0}
-            onClick={() => {
-              setPending({ kind: "endSessions" });
-            }}
-          >
-            End all sessions
-          </button>
-          <span className="wc-field-hint">
-            Rotating the password below also ends every session, and is the better move if the
-            password itself is what you no longer trust.
-          </span>
-        </div>
-      </Panel>
+      <SessionsPanel subject={account.subject} onChanged={reload} />
 
       <Panel
         title="Password"
@@ -329,38 +296,6 @@ function AccountBody({
       </Confirm>
 
       <Confirm
-        open={pending.kind === "endSessions"}
-        title={`End all sessions for ${account.username}?`}
-        confirmLabel="Disable, then re-enable"
-        busy={writer.busy}
-        onCancel={close}
-        onConfirm={() => {
-          void finish(() =>
-            writer.run(
-              () => endAllSessions(account.subject),
-              (result) =>
-                result.revoked === 0
-                  ? `No live sessions to end. ${account.username} is enabled.`
-                  : `Ended ${plural(result.revoked, "session", "sessions")}. ${account.username} is enabled again and its grants were untouched.`,
-            ),
-          );
-        }}
-      >
-        <p>
-          Ward has no endpoint that revokes an account&rsquo;s sessions on its own, so this console
-          does it with the two calls that exist: <strong>disable</strong>, which revokes every live
-          refresh family, then <strong>re-enable</strong>, which unlocks the account without
-          restoring them. The grants are untouched throughout.
-        </p>
-        <p>
-          Two audit rows are written — <span className="wc-id">user.disable</span> and{" "}
-          <span className="wc-id">user.enable</span> — and there is a moment between them where the
-          account cannot sign in. If the second call fails, the account stays disabled and you will
-          have to re-enable it from the panel above.
-        </p>
-      </Confirm>
-
-      <Confirm
         open={pending.kind === "revokeApp"}
         title={
           pending.kind === "revokeApp"
@@ -396,29 +331,187 @@ function AccountBody({
 }
 
 /**
- * Revoke every live session for an account, out of the two calls Ward has.
+ * The account's live sessions — one row per device, not a count.
  *
- * `disable` revokes every refresh family in the same transaction as it stamps
- * `disabled_at`; `enable` clears the stamp and deliberately does **not** restore
- * the sessions. Composed, that is "end all sessions" — see the confirmation the
- * operator reads before it runs, which states the cost honestly.
+ * `GET /console/accounts/:subject/sessions` lists the newest live refresh row
+ * per family. `issuedAt` is that row's own issuance — the **last refresh**,
+ * not the original sign-in — because the family's first row is deliberately
+ * not fetched: it would be one extra query per device to report a timestamp
+ * nobody can act on, where a refresh four minutes ago is the fact that says
+ * whether a device is in use.
  *
- * A dedicated endpoint would be better and is named in the handover. The
- * failure between the two calls is why: it leaves the account disabled, and the
- * error below is what tells the operator so.
+ * Ward records no device name and no address for a family: `refresh_tokens`
+ * has no such column. A family id is the only handle a session has here, and
+ * this panel says so rather than letting a list of rows imply an operator can
+ * tell which device is which.
  */
-async function endAllSessions(subject: string): Promise<{ revoked: number }> {
-  const disabled = await consoleApi.disableAccount(subject);
-  try {
-    await consoleApi.enableAccount(subject);
-  } catch (error) {
-    if (isUnauthorized(error)) throw error;
-    throw new Error(
-      `The ${plural(disabled.sessionsRevoked, "session", "sessions")} were revoked, but re-enabling the account failed: ${messageFor(error)} The account is still DISABLED — re-enable it from the account state panel.`,
-      { cause: error },
+function SessionsPanel({
+  subject,
+  onChanged,
+}: {
+  subject: string;
+  onChanged: () => void;
+}): React.JSX.Element {
+  const sessions = useConsoleLoad(`sessions:${subject}`, () => consoleApi.listSessions(subject));
+  const writer = useWriter();
+  const [revoking, setRevoking] = useState<string | undefined>();
+  const [endingAll, setEndingAll] = useState(false);
+
+  async function revokeOne(familyId: string): Promise<void> {
+    const ok = await writer.run(
+      () => consoleApi.revokeSession(subject, familyId),
+      (result) =>
+        result.changed
+          ? "That session was ended. The device signs out the next time it tries to refresh."
+          : "That session had already ended.",
     );
+    setRevoking(undefined);
+    if (ok) {
+      sessions.reload();
+      onChanged();
+    }
   }
-  return { revoked: disabled.sessionsRevoked };
+
+  async function revokeAll(): Promise<void> {
+    const ok = await writer.run(
+      () => consoleApi.revokeAllSessions(subject),
+      (result) =>
+        result.revoked === 0
+          ? "No live sessions to end."
+          : `Ended ${plural(result.revoked, "session", "sessions")}. The account itself was untouched.`,
+    );
+    setEndingAll(false);
+    if (ok) {
+      sessions.reload();
+      onChanged();
+    }
+  }
+
+  return (
+    <Panel
+      title="Sessions"
+      note="Ward keeps no device name and no address for a live session — refresh_tokens has no such column — so a family id below is the only handle it has. What's shown as issued is the last refresh, not the original sign-in."
+    >
+      {writer.error === undefined ? null : (
+        <Alert tone="error" title="The session was not ended" takeFocus>
+          {writer.error}
+        </Alert>
+      )}
+
+      {sessions.result.state === "loading" ? (
+        <p className="wc-panel-note">Loading sessions…</p>
+      ) : null}
+
+      {sessions.result.state === "failed" ? (
+        <Alert tone="error" title="The sessions did not load">
+          {sessions.result.message}
+        </Alert>
+      ) : null}
+
+      {sessions.result.state === "ready" ? (
+        sessions.result.data.sessions.length === 0 ? (
+          <Empty title="No live sessions">
+            <p>Nothing is currently signed in as this account.</p>
+          </Empty>
+        ) : (
+          <>
+            <div className="wc-table-scroll">
+              <table className="wc-table">
+                <caption>
+                  {plural(sessions.result.data.sessions.length, "live session", "live sessions")}.
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Device</th>
+                    <th scope="col">Last refreshed</th>
+                    <th scope="col">Expires</th>
+                    <th scope="col">
+                      <span className="wc-sr">Revoke</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.result.data.sessions.map((session) => (
+                    <tr key={session.familyId}>
+                      <td className="wc-id">{session.familyId}</td>
+                      <td>{formatWhen(session.issuedAt)}</td>
+                      <td>{formatWhen(session.expiresAt)}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="wc-btn-link"
+                          disabled={writer.busy}
+                          onClick={() => {
+                            setRevoking(session.familyId);
+                          }}
+                        >
+                          End this session
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="wc-actions">
+              <button
+                type="button"
+                className="wc-btn"
+                data-tone="danger"
+                disabled={writer.busy}
+                onClick={() => {
+                  setEndingAll(true);
+                }}
+              >
+                End all sessions
+              </button>
+              <span className="wc-field-hint">
+                Rotating the password below also ends every session, and is the better move if the
+                password itself is what you no longer trust.
+              </span>
+            </div>
+          </>
+        )
+      ) : null}
+
+      <Confirm
+        open={revoking !== undefined}
+        title="End this session?"
+        confirmLabel="End session"
+        busy={writer.busy}
+        onCancel={() => {
+          setRevoking(undefined);
+        }}
+        onConfirm={() => {
+          if (revoking !== undefined) void revokeOne(revoking);
+        }}
+      >
+        <p>
+          The device on this session is signed out the next time it tries to refresh its access
+          token — within about fifteen minutes if it is in active use.
+        </p>
+      </Confirm>
+
+      <Confirm
+        open={endingAll}
+        title="End every session for this account?"
+        confirmLabel="End all sessions"
+        busy={writer.busy}
+        onCancel={() => {
+          setEndingAll(false);
+        }}
+        onConfirm={() => {
+          void revokeAll();
+        }}
+      >
+        <p>
+          Every live session ends in one call. The account&rsquo;s grants, password and email are
+          untouched, and it can sign in again immediately — this is the whole difference from
+          disabling it.
+        </p>
+      </Confirm>
+    </Panel>
+  );
 }
 
 /** The oldest grant in a set — who opened this app to this account, and when. */

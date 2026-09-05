@@ -152,10 +152,9 @@ export interface NewApp {
 /**
  * One `audit_log` row as this client expects it.
  *
- * **The endpoint that would serve this does not exist yet** — see
- * {@link ConsoleApi.listAudit}. The shape mirrors `api/src/db/audit-log.ts`'s
- * `AuditLogRow` with the column names camel-cased the way every other console
- * view is, and `detail` already parsed from its JSON string.
+ * The shape mirrors `api/src/db/audit-log.ts`'s `AuditLogRow` with the column
+ * names camel-cased the way every other console view is, and `detail` already
+ * parsed from its JSON string by `GET /console/audit`.
  */
 export interface AuditRowView {
   id: number;
@@ -169,15 +168,22 @@ export interface AuditRowView {
   detail: unknown;
 }
 
-/** The filters the audit screen offers. Every field optional. */
+/**
+ * The filters the audit screen offers. Every field optional.
+ *
+ * `actorKind` and `targetKind` are closed unions rather than `string`, because
+ * the route validates them as `z.enum`s and answers `400 invalid_request` for
+ * anything else — a typo here must read as a mistake, not as an empty page
+ * that looks like "nothing ever happened on this surface".
+ */
 export interface AuditQuery {
   /** Only rows for an ordinary account actor. Null-subject rows are excluded. */
   actorSubject?: string;
-  /** `superuser` | `account` | `system` — the only way to filter console rows. */
-  actorKind?: string;
+  /** The only way to filter console rows, whose `actor_subject` is null. */
+  actorKind?: "superuser" | "account" | "system";
   /** Matches `actor_label` exactly — a username, or `superuser`. */
   actorLabel?: string;
-  targetKind?: string;
+  targetKind?: "user" | "app" | "grant" | "session" | "token";
   targetId?: string;
   action?: string;
   /** Keyset pagination: rows with `id` strictly below this one. */
@@ -185,10 +191,48 @@ export interface AuditQuery {
   limit?: number;
 }
 
-/** `GET /console/audit` — the proposed shape. */
+/** `GET /console/audit`. */
 export interface AuditListResult {
   entries: AuditRowView[];
+  /** The size of the **whole** log, not of this filtered page. */
   total: number;
+  /** The cursor for the next page, or `null` when this page was the last one. */
+  nextBeforeId: number | null;
+}
+
+/** A live session (device), as `GET .../sessions` and its siblings render it. */
+export interface SessionView {
+  /** The device. What `DELETE .../sessions/:familyId` takes. */
+  familyId: string;
+  /** When the **current** token in this family was issued — the last refresh, not the original sign-in. */
+  issuedAt: string;
+  expiresAt: string;
+  /** Non-null only for a token spent and somehow left live — a raced refresh inside the grace window. */
+  usedAt: string | null;
+}
+
+/** `GET /console/accounts/:subject/sessions` */
+export interface SessionListResult {
+  sessions: SessionView[];
+  total: number;
+}
+
+/** `DELETE /console/accounts/:subject/sessions/:familyId` */
+export interface SessionRevokeResult {
+  subject: string;
+  familyId: string;
+  revoked: number;
+  changed: boolean;
+}
+
+/** `POST /console/accounts/:subject/sessions/revoke` */
+export interface SessionRevokeAllResult {
+  subject: string;
+  /** Families (devices) ended. */
+  revoked: number;
+  /** Rows revoked, which can exceed `revoked` inside a refresh race. */
+  tokensRevoked: number;
+  changed: boolean;
 }
 
 /**
@@ -320,6 +364,10 @@ export interface ConsoleApi {
   disableAccount(subject: string): Promise<DisableResult>;
   enableAccount(subject: string): Promise<EnableResult>;
   setPassword(subject: string, password: string): Promise<PasswordRotateResult>;
+
+  listSessions(subject: string): Promise<SessionListResult>;
+  revokeSession(subject: string, familyId: string): Promise<SessionRevokeResult>;
+  revokeAllSessions(subject: string): Promise<SessionRevokeAllResult>;
 
   listAudit(query?: AuditQuery): Promise<AuditListResult>;
 }
@@ -539,18 +587,46 @@ export function createConsoleApi(fetchImpl?: FetchLike): ConsoleApi {
       });
     },
 
+    listSessions(subject) {
+      return call<SessionListResult>(`/accounts/${encodeURIComponent(subject)}/sessions`);
+    },
+
     /**
-     * `GET /console/audit` — **this route does not exist in the API yet.**
+     * `DELETE /console/accounts/:subject/sessions/:familyId` — end one device.
      *
-     * It is written here rather than omitted because everything behind it does
-     * exist: `api/src/db/audit-log.ts` already has `listAudit`, `countAudit`,
-     * keyset pagination and an `AuditQuery`. What is missing is a Fastify route
-     * behind the console guard, plus two fields on `AuditQuery` —
-     * `actorKind` and `actorLabel` — because every console mutation is written
-     * with `actor_subject = NULL` and is otherwise unfilterable by actor.
+     * `:subject` is redundant to the write (`revokeFamily` is keyed on
+     * `familyId` alone) and checked anyway: a console that would revoke any
+     * family id given any subject is a console whose URLs cannot be trusted in
+     * an audit row or a log line. A family that belongs to somebody else
+     * answers `404 session_not_found`, identically to one that does not exist.
+     */
+    revokeSession(subject, familyId) {
+      return call<SessionRevokeResult>(
+        `/accounts/${encodeURIComponent(subject)}/sessions/${encodeURIComponent(familyId)}`,
+        { method: "DELETE" },
+      );
+    },
+
+    /**
+     * `POST /console/accounts/:subject/sessions/revoke` — end every session,
+     * with no side effect on the account itself. The grants, password and
+     * email are untouched, and the account can sign in again immediately —
+     * the whole difference from `disableAccount`.
+     */
+    revokeAllSessions(subject) {
+      return call<SessionRevokeAllResult>(
+        `/accounts/${encodeURIComponent(subject)}/sessions/revoke`,
+        { method: "POST" },
+      );
+    },
+
+    /**
+     * `GET /console/audit` — read the audit trail.
      *
-     * Until it lands this throws a `404` whose `isMissingEndpoint` is true, and
-     * the audit screen says so precisely instead of showing an empty log.
+     * `total` is the size of the **whole** log, not of this filtered page —
+     * that is what "42 shown of 1207 in the log" needs — and `nextBeforeId` is
+     * the cursor for the next older page, `null` when this page was the last
+     * one.
      */
     listAudit(query = {}) {
       return call<AuditListResult>(`/audit${queryString({ ...query })}`);

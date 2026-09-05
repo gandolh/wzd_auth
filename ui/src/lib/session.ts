@@ -1,4 +1,4 @@
-import { introspect, refresh, type IntrospectResult, type LoginResult } from "./api.js";
+import { introspect, refresh, type IntrospectResult } from "./api.js";
 
 /**
  * Who is signed in, and the one piece of state this UI keeps.
@@ -117,32 +117,4 @@ export function readSession(): Promise<Session> {
     inFlight = undefined;
   });
   return inFlight;
-}
-
-/**
- * What the last successful `POST /login` in **this page's lifetime** said.
- *
- * The only thing that reads it is the unverified-email prompt on
- * `/ward/account`, and the reason it exists is the gap named in
- * `lib/self-service.ts`: `/introspect` returns four fields on purpose and none
- * of them is `emailVerified`, so after a reload there is no way to know. A
- * `GET /ward-api/account` would retire this.
- *
- * Deliberately **in memory and not in `sessionStorage`**. A remembered
- * "unverified" that outlives the page would still be showing a prompt after
- * somebody clicked the link in their mail, and a stale nag is worse than a
- * missing one. Losing it on reload is the correct failure.
- */
-let loginHint: LoginResult | undefined;
-
-export function rememberLogin(result: LoginResult): void {
-  loginHint = result;
-}
-
-export function recallLogin(): LoginResult | undefined {
-  return loginHint;
-}
-
-export function forgetLogin(): void {
-  loginHint = undefined;
 }

@@ -139,7 +139,22 @@ describe("the base path", () => {
       run: (api) => api.setPassword("s", "p"),
       body: { subject: "s", sessionsRevoked: 0 },
     },
-    { name: "listAudit", run: (api) => api.listAudit(), body: { entries: [], total: 0 } },
+    { name: "listSessions", run: (api) => api.listSessions("s"), body: { sessions: [], total: 0 } },
+    {
+      name: "revokeSession",
+      run: (api) => api.revokeSession("s", "f_1"),
+      body: { subject: "s", familyId: "f_1", revoked: 1, changed: true },
+    },
+    {
+      name: "revokeAllSessions",
+      run: (api) => api.revokeAllSessions("s"),
+      body: { subject: "s", revoked: 0, tokensRevoked: 0, changed: false },
+    },
+    {
+      name: "listAudit",
+      run: (api) => api.listAudit(),
+      body: { entries: [], total: 0, nextBeforeId: null },
+    },
   ];
 
   for (const method of methods) {
@@ -212,6 +227,16 @@ describe("request building", () => {
     const { api, calls } = recorder({ body: { account: {}, grants: [], liveSessions: 0 } });
     await api.getAccount("weird/subject");
     expect(only(calls).url).toBe("/ward-api/console/accounts/weird%2Fsubject");
+  });
+
+  it("percent-encodes both the subject and the family id in a session revoke", async () => {
+    const { api, calls } = recorder({
+      body: { subject: "weird/subject", familyId: "f/1", revoked: 1, changed: true },
+    });
+    await api.revokeSession("weird/subject", "f/1");
+    const call = only(calls);
+    expect(call.method).toBe("DELETE");
+    expect(call.url).toBe("/ward-api/console/accounts/weird%2Fsubject/sessions/f%2F1");
   });
 
   it("puts exactly one filter on GET /grants", async () => {

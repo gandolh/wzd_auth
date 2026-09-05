@@ -39,14 +39,16 @@ import { onceByKey } from "../lib/once.js";
  * copy therefore has to cover both without guessing, which is why it leads with
  * the likely one.
  *
- * ## Note for whoever owns the mail template
+ * ## This page is the one the mail link actually visits
  *
- * `verificationLink` in `api/src/mail/templates.ts` currently points at
- * `/ward-api/verify?token=…` — the **API**, which renders its own small
- * server-side page. That works, and it means this React page is not on the path
- * a person actually takes from their inbox today. Pointing the mail at
- * `/ward/verify?token=…` instead is a one-line change in a file brief 09 does
- * not own; see the brief's handoff notes.
+ * `verificationLink` in `api/src/mail/templates.ts` points at
+ * `/ward/verify?token=…` — this page, served by the UI bundle — rather than at
+ * the API's own small server-rendered page. Both still exist:
+ * `GET /ward-api/verify` performs the verification either way, and stays
+ * reachable directly for a non-browser client, content-negotiated by
+ * `Accept`. This page is simply the one a person actually lands on from their
+ * inbox, which is why the copy above is written for that moment rather than
+ * for a bare API response.
  */
 
 type Outcome = "verified" | WardErrorCode;

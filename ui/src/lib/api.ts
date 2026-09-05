@@ -62,6 +62,11 @@ export type WardErrorCode =
   // /verify
   | "expired_token"
   | "invalid_token"
+  // /account, /account/password, /account/sessions/revoke-others — a dead
+  // session, distinctly from `invalid_credentials` (a wrong *current*
+  // password) and from `unexpected` (a bug). Rendered as "you were signed
+  // out", never as a failure to explain.
+  | "unauthorized"
   // this module's own
   | "unreachable"
   | "unexpected";
@@ -99,6 +104,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<WardErrorCode>([
   "password_too_long",
   "expired_token",
   "invalid_token",
+  "unauthorized",
 ]);
 
 /**
@@ -304,34 +310,113 @@ export function register(input: RegisterInput): Promise<RegisterResult> {
   return postJson<RegisterResult>("/register", input);
 }
 
+export interface AccountResult {
+  subject: string;
+  username: string;
+  /** `null` for an owner-issued account — it was never given an address. */
+  email: string | null;
+  emailVerified: boolean;
+  createdAt: string;
+}
+
 /**
- * `POST /ward-api/account/password` — **this endpoint does not exist yet.**
+ * `GET /ward-api/account` — the caller's own record, including the two fields
+ * `/introspect` deliberately never carries: `email` and `emailVerified`.
  *
- * It is written here rather than left implicit because the shape is the useful
- * half of the handoff: the UI that calls it is built, `Account` renders it only
- * when `CAN_CHANGE_OWN_PASSWORD` is on, and `lib/self-service.ts` spells out
- * what the route has to do. Nothing calls this while that flag is `false`.
- *
- * It is emphatically **not** `POST /console/accounts/:subject/password`. That
- * route is superuser-only and takes no current password, so borrowing it would
- * mean either a guaranteed `401` or the break-glass credential sitting in
- * somebody's browser.
+ * Cookie-authenticated the same way as the two mutations below — verify, then
+ * `resolveSession` for liveness — so a **`401 unauthorized`** means the session
+ * is dead, not that something broke. There is no statusless answer here the
+ * way there is on `/introspect`: this is a person's own browser reading their
+ * own record, and there is no third party for a status code to leak anything
+ * to.
  */
-export function changeOwnPassword(currentPassword: string, newPassword: string): Promise<void> {
-  return postJson<undefined>("/account/password", { currentPassword, newPassword });
+export function getAccount(): Promise<AccountResult> {
+  return request<AccountResult>("/account", { method: "GET" });
+}
+
+export interface ChangePasswordResult {
+  subject: string;
+  /**
+   * How many refresh families this change ended, **including the caller's own
+   * previous one** — it was revoked and replaced by the fresh pair that
+   * arrived in this response's cookies, not left alive alongside them. A
+   * person with exactly one device sees `1` here, and that is not "one other
+   * device was found and signed out" — it is "the credential you were holding
+   * a moment ago is dead", which the new cookies already fixed. Never render
+   * this number as a device count; see `Account.tsx`.
+   */
+  sessionsRevoked: number;
+  accessTokenExpiresAt: string;
+  refreshTokenExpiresAt: string;
+}
+
+/**
+ * `POST /ward-api/account/password` — change my own password.
+ *
+ * The current password is verified server-side before anything else; a
+ * self-service change that skipped that check would be an account takeover
+ * one XSS or one borrowed laptop away, with no recovery channel behind it for
+ * an owner-issued account. On success every refresh family for the account is
+ * revoked and one fresh pair is issued to the caller, so the response's
+ * cookies keep this browser signed in while every other holder of the old
+ * credential — including this browser's own previous session — is signed out.
+ *
+ * Errors: `401 invalid_credentials` for a wrong current password (the same
+ * code `/login` uses for a wrong password generally); `400
+ * password_too_short` / `password_too_long` for the new one;
+ * `429 too_many_attempts` on **its own lockout budget**, independent of
+ * `/login`'s — a person locked out here can still sign in, and the copy must
+ * not imply otherwise; `401 unauthorized` for a dead session.
+ */
+export function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<ChangePasswordResult> {
+  return postJson<ChangePasswordResult>("/account/password", { currentPassword, newPassword });
 }
 
 export interface RevokeOthersResult {
-  /** How many other sessions ended. Rendered, so it must be a count. */
+  /** Families (devices) ended. Rendered — this is the number that reassures. */
   revoked: number;
+  /** Rows revoked, which can exceed `revoked` inside a refresh race. Not rendered. */
+  tokensRevoked: number;
+  /** This session's own family, spared by the call. An implementation detail. */
+  spared: string;
 }
 
 /**
- * `POST /ward-api/account/sessions/revoke-others` — **this endpoint does not
- * exist yet.** See `changeOwnPassword` above and `lib/self-service.ts`.
+ * `POST /ward-api/account/sessions/revoke-others` — sign out my other
+ * devices, and the feature the self-service page exists for: owner-issued
+ * accounts carry no verified email and therefore no recovery channel, so this
+ * is the only self-serve response to a suspected stolen session.
+ *
+ * Ends every refresh family for the account **except** the one the caller's
+ * own access token names, so the browser that made the request stays signed
+ * in throughout. `401 unauthorized` for a dead session; `403 cross_site` for
+ * a cross-site POST, refused the same way `/logout` and `/refresh` are.
  */
 export function revokeOtherSessions(): Promise<RevokeOthersResult> {
   return postJson<RevokeOthersResult>("/account/sessions/revoke-others");
+}
+
+export interface OpenAppView {
+  slug: string;
+  name: string;
+}
+
+/**
+ * `GET /ward-api/apps` — the apps a stranger may register at. **Anonymous**,
+ * and a bare array: the console's list carries a total and filters because it
+ * is superuser-only and can grow; this one is the estate's complete set of
+ * open apps, a handful of rows at most.
+ *
+ * `[]` is a state, not a failure — a fresh estate has none, until the console
+ * opens one. It exposes nothing an anonymous caller could not already learn by
+ * posting to `/register` with a slug, and it says nothing at all about a
+ * *closed* app, including whether one exists — see `api/src/routes/public-apps.ts`.
+ */
+export function listOpenApps(): Promise<OpenAppView[]> {
+  return request<OpenAppView[]>("/apps", { method: "GET" });
 }
 
 /**

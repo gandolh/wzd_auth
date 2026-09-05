@@ -69,6 +69,25 @@ describe("the audit vocabulary", () => {
     }
   });
 
+  it("treats every session revoke and a self-service password change as authority", () => {
+    for (const action of [
+      "session.revoke",
+      "session.revoke_all",
+      "session.revoke_others",
+      "user.password_change",
+    ]) {
+      expect(presentAuditAction(action).severity).toBe("authority");
+    }
+  });
+
+  it("treats a refused self-service password change as a notice, not an alarm", () => {
+    // One wrong guess against a live session is not the stolen-cookie signal;
+    // `session.reuse_detected` stays the only alarm.
+    const presented = presentAuditAction("user.password_change_failed");
+    expect(presented.severity).toBe("notice");
+    expect(presented.isAlarm).toBe(false);
+  });
+
   it("keeps an unrecognised action visible rather than hiding or throwing", () => {
     // The log is append-only and outlives the vocabulary that wrote it.
     const presented = presentAuditAction("something.invented.in.2028");

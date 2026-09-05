@@ -5,9 +5,9 @@ import { Field } from "../components/Field.js";
 import { Notice } from "../components/Notice.js";
 import { Threshold } from "../components/Threshold.js";
 import { WardApiError, login, type WardErrorCode } from "../lib/api.js";
-import { rootName } from "../lib/estate.js";
+import { rootName, slugForRoot } from "../lib/estate.js";
 import { resolveNext } from "../lib/next.js";
-import { rememberLogin } from "../lib/session.js";
+import { useOpenApps } from "../lib/open-apps.js";
 import { deadlineIn, useCountdown } from "../lib/use-countdown.js";
 import { formatWait } from "../lib/wait.js";
 
@@ -53,8 +53,20 @@ import { formatWait } from "../lib/wait.js";
  * and there is no resend endpoint, so the interruption would carry no action.
  * Worse, it would put a stop sign in the middle of a handover this whole page
  * is designed to keep short. The prompt lives on `/ward/account`, which is
- * where somebody has actually come to look at their account, and the login
- * result is remembered in memory so that page can show it.
+ * where somebody has actually come to look at their account — `Account` reads
+ * it itself, from `GET /ward-api/account`, rather than this page remembering
+ * anything for it.
+ *
+ * ## The "create an account" link, and why it names one app
+ *
+ * `GET /ward-api/apps` says which apps accept public registration, so the
+ * footer can offer "Create an account for Atrium" — but only when `?next=`
+ * resolved to a root whose app is one of the open ones. Most apps in the
+ * estate do not accept public registration, and a blanket link with no
+ * destination in mind would send most people who clicked it to a form that
+ * refuses them; a link scoped to the one app this visitor was already headed
+ * to does not have that problem. No destination, or a destination that is not
+ * open, means no link — silently, the same direction `resolveNext` fails in.
  */
 
 /** The one message per failure. Sentences live in the UI; codes on the wire. */
@@ -108,6 +120,23 @@ export function Login(): React.JSX.Element {
   const passwordRef = useRef<HTMLInputElement>(null);
 
   /**
+   * The app to offer "create an account" for, or `undefined` for no link.
+   *
+   * Two conditions, both required: `?next=` has to have resolved to a known
+   * root — the apex (`destination.root === ""`) names nothing to sign up
+   * for — and that root's slug has to be one `GET /ward-api/apps` actually
+   * listed as open. Neither `slugForRoot` finding nothing nor the open-apps
+   * list not (yet) containing the slug is a failure; both just mean no link.
+   */
+  const openApps = useOpenApps();
+  const destinationSlug =
+    destination.accepted && destination.root !== "" ? slugForRoot(destination.root) : undefined;
+  const registerApp =
+    destinationSlug !== undefined && Array.isArray(openApps)
+      ? openApps.find((app) => app.slug === destinationSlug)
+      : undefined;
+
+  /**
    * Focus the first field on arrival.
    *
    * The only autofocus in this UI, and it earns its place: this page has one
@@ -152,8 +181,7 @@ export function Login(): React.JSX.Element {
     setSubmitting(true);
     setFailure(undefined);
     try {
-      const result = await login(username.trim(), password);
-      rememberLogin(result);
+      await login(username.trim(), password);
 
       /**
        * A full navigation, not a router push.
@@ -188,6 +216,17 @@ export function Login(): React.JSX.Element {
           <Link className="ward-link" to="/account">
             Your account
           </Link>
+          {registerApp !== undefined && (
+            <>
+              {" · "}
+              <Link
+                className="ward-link"
+                to={`/register?app=${encodeURIComponent(registerApp.slug)}`}
+              >
+                Create an account for {registerApp.name}
+              </Link>
+            </>
+          )}
         </>
       }
     >
@@ -223,11 +262,9 @@ export function Login(): React.JSX.Element {
         `required` stays on the inputs regardless, because it is what tells
         assistive technology the field is mandatory.
 
-        There is deliberately no "create an account" link here. Registration is
-        per-app and only legal where an operator has set that app's flag, and
-        this UI has no way to ask which apps those are — see
-        `lib/self-service.ts`. A link would send most people to a form that
-        refuses them, which is worse than no link.
+        The "create an account" link, when there is one, lives in the footer
+        above rather than here — see `registerApp` and the docblock on why it
+        names one specific app instead of being a blanket link.
       */}
       <form
         className="ward-form"

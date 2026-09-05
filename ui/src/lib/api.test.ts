@@ -26,6 +26,7 @@ describe("errorCodeFrom", () => {
     "password_too_long",
     "expired_token",
     "invalid_token",
+    "unauthorized",
   ] as const;
 
   for (const code of known) {

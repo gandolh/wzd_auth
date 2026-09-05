@@ -7,43 +7,49 @@ import { Threshold } from "../components/Threshold.js";
 import {
   WardApiError,
   changeOwnPassword,
+  getAccount,
   logout,
   revokeOtherSessions,
+  type AccountResult,
   type WardErrorCode,
 } from "../lib/api.js";
 import { appName } from "../lib/estate.js";
 import { loginRouteFor, loginUrlFor } from "../lib/next.js";
-import { CAN_CHANGE_OWN_PASSWORD, CAN_REVOKE_OTHER_SESSIONS } from "../lib/self-service.js";
-import { forgetLogin, readSession, recallLogin, type Session } from "../lib/session.js";
+import {
+  CAN_CHANGE_OWN_PASSWORD,
+  CAN_READ_OWN_EMAIL,
+  CAN_REVOKE_OTHER_SESSIONS,
+} from "../lib/self-service.js";
+import { deadlineIn, useCountdown } from "../lib/use-countdown.js";
+import { formatWait } from "../lib/wait.js";
+import { readSession, type Session } from "../lib/session.js";
 
 /**
  * `/ward/account` — self-service, and deliberately minimal.
  *
- * Three things belong here by decision, and it is worth being blunt about the
- * state of each, because two of them cannot be built against today's API:
+ * Four things live here:
  *
- * | Asked for | State |
+ * | Asked for | Built against |
  * |---|---|
- * | See my own grants | **built** — `POST /introspect` reads them back |
- * | Change my password | **no endpoint** — see `lib/self-service.ts` |
- * | Sign out my other devices | **no endpoint** — see `lib/self-service.ts` |
+ * | See my own grants | `POST /introspect` |
+ * | See my own email and its verification state | `GET /account` |
+ * | Change my password | `POST /account/password` |
+ * | Sign out my other devices | `POST /account/sessions/revoke-others` |
  *
- * The two gaps are rendered as gaps: the heading is there, the sentence says
- * what is missing and what to do instead, and the form appears the moment its
- * flag in `lib/self-service.ts` flips. What is deliberately *not* done is
- * calling `POST /console/accounts/:subject/password` to fake the first one —
- * that route is superuser-only, so it would either answer `401` or require the
- * break-glass credential to be sitting in somebody's browser, and it takes no
- * current password, which is the entire security property a self-service change
- * has.
+ * What is deliberately *not* done for the password change is calling
+ * `POST /console/accounts/:subject/password` — that route is superuser-only,
+ * so it would either answer `401` or require the break-glass credential to be
+ * sitting in somebody's browser, and it takes no current password, which is
+ * the entire security property a self-service change has.
  *
  * ## Nothing here is about anybody else
  *
  * No account list, no grant editing, no other person's existence acknowledged.
  * That is the console and it is superuser-only. The strongest version of the
- * rule is structural rather than a review note: this page's only source of
- * identity is `/introspect`, which answers **for the caller's own cookie** and
- * cannot be pointed at a subject. There is no parameter to tamper with.
+ * rule is structural rather than a review note: every source of identity on
+ * this page — `/introspect`, `/account`, `/account/password`,
+ * `/account/sessions/revoke-others` — answers **for the caller's own cookie**
+ * and cannot be pointed at a subject. There is no parameter to tamper with.
  *
  * ## Signing out is not the same as signing out everywhere
  *
@@ -52,6 +58,15 @@ import { forgetLogin, readSession, recallLogin, type Session } from "../lib/sess
  * laptop does not sign you out of your phone. Which is also why "sign out my
  * other devices" is a genuinely different operation and not this call with a
  * flag on it.
+ *
+ * ## A `401 unauthorized` from any of these is a sign-out, not an error
+ *
+ * `/account`, `/account/password` and `/account/sessions/revoke-others` all
+ * answer `401 {"error":"unauthorized"}` for a session that has died since the
+ * page loaded — a revoked session, an expired one nothing has refreshed yet.
+ * Every component below that calls one of them is handed `onSignedOut` and
+ * calls it on that code rather than rendering "that didn't work", which is
+ * what a page that treated a dead session as a bug would say.
  */
 
 function passwordMessage(code: WardErrorCode): string {
@@ -62,8 +77,6 @@ function passwordMessage(code: WardErrorCode): string {
       return "The new password needs at least 8 characters.";
     case "password_too_long":
       return "That new password is too long.";
-    case "too_many_attempts":
-      return "Too many attempts. Wait a few minutes and try again.";
     case "unreachable":
       return "Ward isn't answering. Try again in a moment.";
     default:
@@ -79,6 +92,19 @@ export function Account(): React.JSX.Element {
   }, []);
 
   useEffect(load, [load]);
+
+  /**
+   * Drop straight to the signed-out screen, with no round trip.
+   *
+   * Handed to every component below that calls `/account`,
+   * `/account/password` or `/account/sessions/revoke-others`, for a `401
+   * unauthorized` on any of them: the session already died, so re-asking
+   * `readSession` would only spend a request to learn what the failing call
+   * already said.
+   */
+  const signOut = useCallback(() => {
+    setSession({ status: "signed-out" });
+  }, []);
 
   if (session.status === "loading") {
     return (
@@ -129,32 +155,73 @@ export function Account(): React.JSX.Element {
     );
   }
 
-  return <SignedIn session={session} />;
+  return <SignedIn session={session} onSignedOut={signOut} />;
+}
+
+/**
+ * The caller's own record, loaded once per sign-in.
+ *
+ * `"off"` when `CAN_READ_OWN_EMAIL` is false, so a caller can render exactly
+ * as if the flag did not exist rather than branching on both a flag and a
+ * load state. A `401 unauthorized` here calls `onSignedOut` rather than
+ * setting `"failed"` — see the module docblock.
+ */
+type OwnAccount =
+  | { state: "off" }
+  | { state: "loading" }
+  | { state: "ready"; data: AccountResult }
+  | { state: "failed" };
+
+function useOwnAccount(onSignedOut: () => void): OwnAccount {
+  const [state, setState] = useState<OwnAccount>(
+    CAN_READ_OWN_EMAIL ? { state: "loading" } : { state: "off" },
+  );
+
+  useEffect(() => {
+    if (!CAN_READ_OWN_EMAIL) return;
+    let live = true;
+    void getAccount().then(
+      (data) => {
+        if (live) setState({ state: "ready", data });
+      },
+      (error: unknown) => {
+        if (!live) return;
+        if (error instanceof WardApiError && error.code === "unauthorized") {
+          onSignedOut();
+          return;
+        }
+        setState({ state: "failed" });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [onSignedOut]);
+
+  return state;
 }
 
 function SignedIn({
   session,
+  onSignedOut,
 }: {
   session: Extract<Session, { status: "signed-in" }>;
+  onSignedOut: () => void;
 }): React.JSX.Element {
   const grants = Object.entries(session.grants);
+  const account = useOwnAccount(onSignedOut);
 
   /**
-   * The unverified-address prompt, and the one place it appears.
+   * The unverified-address prompt.
    *
-   * Read from what `POST /login` said earlier **in this page's lifetime**,
-   * because `/introspect` returns exactly four fields and none of them is
-   * `emailVerified` — see `lib/self-service.ts`. After a reload the prompt is
-   * absent rather than wrong, which is the right direction to be incomplete in:
-   * a stale "your address is unconfirmed" shown to somebody who confirmed it
-   * ten minutes ago is worse than no prompt at all.
-   *
-   * Also checked against this session's subject, so a login as one person
-   * followed by a sign-in as another in the same tab cannot show the first
-   * person's state.
+   * Only rendered once `GET /account` has actually answered, and only when
+   * there is an address to confirm at all — an owner-issued account's `email`
+   * is `null`, and there is nothing to nag about there. Sourced from the
+   * account's own record rather than from what `/login` said earlier in the
+   * page's lifetime, so it is still correct after a reload.
    */
-  const hint = recallLogin();
-  const unverified = hint !== undefined && hint.subject === session.subject && !hint.emailVerified;
+  const unverified =
+    account.state === "ready" && account.data.email !== null && !account.data.emailVerified;
 
   return (
     <Threshold
@@ -186,6 +253,16 @@ function SignedIn({
           character by character.
         */}
         <dd className="ward-mono">{session.subject}</dd>
+        {account.state === "ready" && (
+          <>
+            <dt>Email</dt>
+            <dd>
+              {account.data.email === null
+                ? "None on record — this account was created from the console."
+                : `${account.data.email} ${account.data.emailVerified ? "(confirmed)" : "(unconfirmed)"}`}
+            </dd>
+          </>
+        )}
       </dl>
 
       <h2>What you can reach</h2>
@@ -212,8 +289,8 @@ function SignedIn({
         </>
       )}
 
-      <ChangePassword />
-      <OtherDevices />
+      <ChangePassword onSignedOut={onSignedOut} />
+      <OtherDevices onSignedOut={onSignedOut} />
       <SignOut username={session.username} />
     </Threshold>
   );
@@ -222,19 +299,22 @@ function SignedIn({
 /**
  * Change password.
  *
- * The form is complete and correct — three fields, the right `autoComplete`
- * values, the current password required, errors bound with `aria-describedby`
- * — and it is behind `CAN_CHANGE_OWN_PASSWORD` because
- * `POST /ward-api/account/password` does not exist. That flag is the whole
- * wiring job when it lands.
+ * Three fields, the right `autoComplete` values, the current password
+ * required, errors bound with `aria-describedby`, behind
+ * `CAN_CHANGE_OWN_PASSWORD`.
  *
- * The current password is required by the form and would be required by the
- * route. It is not ceremony: without it, an XSS anywhere on the estate's single
- * origin — or a borrowed unlocked laptop — becomes a permanent account
- * takeover, and there is no recovery channel behind an owner-issued account to
- * take it back with.
+ * The current password is required by the form and by the route. It is not
+ * ceremony: without it, an XSS anywhere on the estate's single origin — or a
+ * borrowed unlocked laptop — becomes a permanent account takeover, and there
+ * is no recovery channel behind an owner-issued account to take it back with.
+ *
+ * `POST /account/password` runs on **its own lockout budget**, separate from
+ * `/login`'s, so a `429` here is answered with its own countdown rather than
+ * `passwordMessage`'s generic line — and the copy says plainly that signing in
+ * still works, because a person reading "too many attempts" right after
+ * typing a password has every reason to assume the worst.
  */
-function ChangePassword(): React.JSX.Element {
+function ChangePassword({ onSignedOut }: { onSignedOut: () => void }): React.JSX.Element {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -242,10 +322,14 @@ function ChangePassword(): React.JSX.Element {
   const [failure, setFailure] = useState<WardErrorCode | undefined>();
   const [mismatch, setMismatch] = useState(false);
   const [done, setDone] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState<number | undefined>();
+
+  const waitLeft = useCountdown(lockedUntil);
+  const lockedOut = lockedUntil !== undefined && waitLeft > 0;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (busy) return;
+    if (busy || lockedOut) return;
 
     // Checked here because the API cannot: it receives one new password and has
     // no way to know somebody mistyped it twice the same way. This is the only
@@ -265,7 +349,16 @@ function ChangePassword(): React.JSX.Element {
       setNext("");
       setConfirm("");
     } catch (error) {
-      setFailure(error instanceof WardApiError ? error.code : "unexpected");
+      const code = error instanceof WardApiError ? error.code : "unexpected";
+      if (code === "unauthorized") {
+        onSignedOut();
+        return;
+      }
+      if (code === "too_many_attempts") {
+        const seconds = error instanceof WardApiError ? (error.retryAfterSeconds ?? 60) : 60;
+        setLockedUntil(deadlineIn(seconds));
+      }
+      setFailure(code);
     } finally {
       setBusy(false);
     }
@@ -285,10 +378,20 @@ function ChangePassword(): React.JSX.Element {
         <>
           {done && (
             <Notice tone="info" live="assertive">
-              Password changed. Any other device signed in as you has been signed out.
+              Password changed. This browser is still signed in — Ward gave it a fresh session just
+              now. The one it had a moment ago, and every other device signed in as you, has been
+              ended.
             </Notice>
           )}
-          {failure !== undefined && <Notice tone="error">{passwordMessage(failure)}</Notice>}
+          {lockedOut && (
+            <Notice tone="wait">
+              Too many attempts at changing your password. This is a separate limit from signing in
+              — it doesn't affect that. Try again in <strong>{formatWait(waitLeft)}</strong>.
+            </Notice>
+          )}
+          {failure !== undefined && failure !== "too_many_attempts" && (
+            <Notice tone="error">{passwordMessage(failure)}</Notice>
+          )}
           <form
             className="ward-form"
             noValidate
@@ -304,7 +407,7 @@ function ChangePassword(): React.JSX.Element {
               autoComplete="current-password"
               required
               value={current}
-              disabled={busy}
+              disabled={busy || lockedOut}
               onChange={(event) => {
                 setCurrent(event.target.value);
               }}
@@ -319,7 +422,7 @@ function ChangePassword(): React.JSX.Element {
               minLength={8}
               hint="At least 8 characters."
               value={next}
-              disabled={busy}
+              disabled={busy || lockedOut}
               onChange={(event) => {
                 setNext(event.target.value);
               }}
@@ -333,17 +436,18 @@ function ChangePassword(): React.JSX.Element {
               required
               value={confirm}
               error={mismatch ? "The two new passwords don't match." : undefined}
-              disabled={busy}
+              disabled={busy || lockedOut}
               onChange={(event) => {
                 setConfirm(event.target.value);
               }}
             />
             <div className="ward-actions">
-              <button className="ward-button" type="submit" disabled={busy}>
+              <button className="ward-button" type="submit" disabled={busy || lockedOut}>
                 {busy ? "Changing…" : "Change password"}
               </button>
               <span className="ward-field__hint">
-                Changing your password signs out every other device.
+                Signs out every other device that was signed in as you. This one stays signed in —
+                it gets a fresh session automatically.
               </span>
             </div>
           </form>
@@ -360,11 +464,9 @@ function ChangePassword(): React.JSX.Element {
  * argument, and the argument is worth repeating where the control is: an
  * owner-issued account has no verified email and therefore **no recovery
  * channel**, so this is the only self-serve move available to somebody who
- * thinks their session has been stolen. It needs
- * `POST /ward-api/account/sessions/revoke-others`, which does not exist —
- * making this the most consequential gap in brief 09.
+ * thinks their session has been stolen.
  */
-function OtherDevices(): React.JSX.Element {
+function OtherDevices({ onSignedOut }: { onSignedOut: () => void }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [revoked, setRevoked] = useState<number | undefined>();
   const [failure, setFailure] = useState<WardErrorCode | undefined>();
@@ -376,7 +478,12 @@ function OtherDevices(): React.JSX.Element {
     try {
       setRevoked((await revokeOtherSessions()).revoked);
     } catch (error) {
-      setFailure(error instanceof WardApiError ? error.code : "unexpected");
+      const code = error instanceof WardApiError ? error.code : "unexpected";
+      if (code === "unauthorized") {
+        onSignedOut();
+        return;
+      }
+      setFailure(code);
     } finally {
       setBusy(false);
     }
@@ -453,7 +560,6 @@ function SignOut({ username }: { username: string }): React.JSX.Element {
       // Nothing to do about it, and nothing to tell the person: the cookies are
       // either cleared or about to be refused.
     }
-    forgetLogin();
     window.location.replace(loginUrlFor("/"));
   }
 

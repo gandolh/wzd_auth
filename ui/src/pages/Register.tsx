@@ -7,6 +7,7 @@ import { Threshold } from "../components/Threshold.js";
 import { WardApiError, register, type RegisterResult, type WardErrorCode } from "../lib/api.js";
 import { appName } from "../lib/estate.js";
 import { loginRouteFor } from "../lib/next.js";
+import { useOpenApps } from "../lib/open-apps.js";
 import { deadlineIn, useCountdown } from "../lib/use-countdown.js";
 import { formatWait } from "../lib/wait.js";
 
@@ -21,16 +22,23 @@ import { formatWait } from "../lib/wait.js";
  * was for would be describing something the API cannot do. The slug comes from
  * `?app=`, and without it this page has nothing to offer and says so.
  *
- * The app's *display name* comes from `lib/estate.ts`'s table, because
- * `apps.name` is only readable through the superuser console. An unrecognised
- * slug is shown as the slug — which is more use to somebody signing up than
- * "Unknown app", and is the ordinary case for an app created after this table
- * was written.
+ * The app's *display name* comes from `GET /ward-api/apps` when that app is
+ * one of the open ones — `useOpenApps` fetches it, and `apps.name` is finally
+ * readable without the superuser console. `lib/estate.ts`'s hard-coded table
+ * is the fallback for everything the open-apps list cannot say anything
+ * about: a closed app (the endpoint says nothing about those at all, by
+ * design) and a slug this UI has never heard of either way. An unrecognised
+ * slug falls all the way through to being shown as the slug — more use to
+ * somebody signing up than "Unknown app".
  *
- * ## `registration_closed` is a state, not an error
+ * ## `registration_closed` is a state, not an error — and now often known early
  *
  * It covers a closed app and an app that does not exist, identically, so the
- * endpoint is not also an app-discovery oracle. And **apps are not seeded**: a
+ * endpoint is not also an app-discovery oracle. When the open-apps list has
+ * loaded and this slug is not in it, the page says so **before** the form is
+ * filled rather than waiting for a submit to find out; a submit answering
+ * `403` regardless is kept as the fallback, because the two lists can
+ * disagree for the length of one request. And **apps are not seeded**: a
  * fresh estate answers `registration_closed` to everything until somebody
  * creates an app in the console. That is correct behaviour that looks exactly
  * like a bug, so it is rendered as information — no red, no "error" — and the
@@ -89,7 +97,14 @@ export function Register(): React.JSX.Element {
 
   const waitLeft = useCountdown(lockedUntil);
   const lockedOut = lockedUntil !== undefined && waitLeft > 0;
-  const name = appName(slug);
+
+  const openApps = useOpenApps();
+  const openEntry = Array.isArray(openApps) ? openApps.find((app) => app.slug === slug) : undefined;
+  const name = openEntry?.name ?? appName(slug);
+  // Only once the list has actually loaded — while it is `"loading"` this is
+  // `false` and the form renders as it always did, so a slow fetch cannot
+  // flash "closed" at somebody before it resolves.
+  const knownClosed = Array.isArray(openApps) && slug !== "" && openEntry === undefined;
 
   const usernameRef = useRef<HTMLInputElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
@@ -189,7 +204,7 @@ export function Register(): React.JSX.Element {
     );
   }
 
-  if (closed) {
+  if (closed || knownClosed) {
     return (
       <Threshold>
         <h1>{name} isn't taking signups</h1>

@@ -98,3 +98,24 @@ export function appName(slug: string): string {
 export function rootName(root: string): string {
   return ESTATE_APPS.find((app) => app.root === root)?.name ?? root;
 }
+
+/**
+ * The Ward registration slug for a path root, or `undefined` for a root this
+ * table has never heard of.
+ *
+ * Used by `Login` to ask "does the app I'm about to send this person back to
+ * accept registration?" — a question about **slugs**
+ * (`GET /ward-api/apps` answers in slugs), asked from a **root** (`?next=`
+ * resolves to one). The two are usually the same string for the same app, but
+ * `estate.ts`'s own header warns that is coincidence rather than a rule, so
+ * this goes through the table rather than assuming they match.
+ *
+ * `design-study` and `saloon` resolve to a slug here too, even though Ward has
+ * no `apps` row for either — see the table's own comment on why an empty slug
+ * is impossible to express. `GET /ward-api/apps` simply never lists that slug
+ * as open, so no "create an account" link is offered for them; nothing here
+ * needs to special-case it.
+ */
+export function slugForRoot(root: string): string | undefined {
+  return ESTATE_APPS.find((app) => app.root === root)?.slug;
+}
