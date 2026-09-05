@@ -1,0 +1,440 @@
+/*
+ * Ward's own surface — the login page, registration, verification and
+ * self-service. Brief 09.
+ *
+ * Imported by `app.tsx`, which means it loads for the console subtree too.
+ * That is intentional and is the second half of the tokens contract: every
+ * value below comes from a `--ward-*` token, so the same `.ward-input` and
+ * `.ward-button` render dark on `data-ward-surface="console"` with no
+ * console-specific code. Brief 10 may use these or ignore them; what it must
+ * not need is a copy of them.
+ *
+ * ---------------------------------------------------------------------------
+ * The layout idea, and why it is not a centred card
+ *
+ * A centred card floating in the middle of a viewport is what every login page
+ * looks like, and it reads as a destination — a lobby you have arrived in. This
+ * page is a door somebody is passing through on their way to Atrium or
+ * Newspapper, and the recorded cost of centralising sign-in is that the seam is
+ * visible no matter what. So the structure is a **jamb**: one vertical rule set
+ * in from the left edge, with the whole crossing hung off it, left-aligned. The
+ * rule is `--ward-rule-strong` for the height of the heading — the part you are
+ * level with as you cross — and a hairline for the rest of the way down.
+ *
+ * Two consequences worth keeping:
+ *
+ * - **The destination is the headline, not Ward.** `?next=` tells us where
+ *   somebody was going, so the page says "Continue to Atrium" and puts its own
+ *   name small in the corner. Inverting the usual product-name-first order is
+ *   the one thing this page can do to make the interruption feel shorter.
+ * - **Nothing animates on load.** There is no reveal, no stagger, no fade. The
+ *   only motion answers an action.
+ * ---------------------------------------------------------------------------
+ */
+
+/* --- The shell ----------------------------------------------------------- */
+
+.ward-threshold {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: var(--ward-space-8);
+  padding: var(--ward-space-6);
+}
+
+/*
+ * The wordmark. Small, muted, and the only place Ward names itself — a door
+ * does not introduce itself before you walk through it. It is a heading in the
+ * accessibility tree because on the register and verify pages it is the only
+ * thing above the `h1`, and a bare `<span>` there gives a screen-reader user
+ * nothing to orient on.
+ */
+.ward-threshold__mark {
+  margin: 0;
+  font-size: var(--ward-text-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ward-text-muted);
+}
+
+.ward-threshold__body {
+  display: flex;
+  align-items: center;
+  /* The inset that makes this a doorway rather than a poster: the crossing
+     sits a third of the way in on a wide screen and flush left on a narrow
+     one, so the left rule always has ground to stand on. */
+  padding-left: clamp(0rem, 7vw, 9rem);
+}
+
+.ward-threshold__footer {
+  margin: 0;
+  font-size: var(--ward-text-xs);
+  color: var(--ward-text-faint);
+}
+
+@media (max-width: 40rem) {
+  .ward-threshold {
+    gap: var(--ward-space-6);
+    padding: var(--ward-space-5);
+  }
+
+  .ward-threshold__body {
+    align-items: flex-start;
+    padding-left: 0;
+  }
+}
+
+/* --- The crossing -------------------------------------------------------- */
+
+/*
+ * The jamb, drawn as two background layers rather than a border so that the
+ * rule can change weight without a second element: a short 2px head at the
+ * very top, a 1px hairline for the full height. Both are flat colours;
+ * `linear-gradient` is only the mechanism CSS gives for painting a sized
+ * rectangle as a background.
+ *
+ * The head is a **fixed short cap**, not the height of the heading. Matching
+ * the heading was the first attempt and it looked like a mistake: app names run
+ * from "Ward" to "Public Resource Map", so the heading is one line or two, and
+ * a weight change that lands halfway down a two-line heading reads as a bug
+ * rather than as structure. A short cap is legible as a deliberate mark at any
+ * heading length.
+ */
+.ward-crossing {
+  width: 100%;
+  max-width: var(--ward-max-width);
+  padding-left: var(--ward-space-6);
+  background-image:
+    linear-gradient(var(--ward-border-strong), var(--ward-border-strong)),
+    linear-gradient(var(--ward-border), var(--ward-border));
+  background-size:
+    var(--ward-rule-strong) var(--ward-space-8),
+    var(--ward-rule) 100%;
+  background-position:
+    left top,
+    left top;
+  background-repeat: no-repeat, no-repeat;
+}
+
+.ward-crossing--wide {
+  max-width: var(--ward-max-width-wide);
+}
+
+/*
+ * The destination line. The one piece of type on this surface allowed to be
+ * large, set tight and heavy enough to read as a signpost. `text-wrap: balance`
+ * matters here because app names vary from "Ward" to "Public Resource Map" and
+ * a two-word orphan on the second line looks like a mistake.
+ */
+.ward-crossing > h1 {
+  margin: 0 0 var(--ward-space-3);
+  /* Capped well below `--ward-text-2xl`: at the form's 26rem measure, a larger
+     size breaks "Continue to Atrium" across two lines and the heading starts
+     to dominate a screen whose whole job is the two fields under it. */
+  font-size: clamp(1.5rem, 1.1rem + 1.5vw, 2.125rem);
+  max-width: 20ch;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.ward-crossing > h2 {
+  margin: var(--ward-space-10) 0 var(--ward-space-3);
+  font-size: var(--ward-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.ward-lede {
+  margin: 0 0 var(--ward-space-8);
+  max-width: 38ch;
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+}
+
+.ward-prose {
+  margin: 0 0 var(--ward-space-4);
+  max-width: 44ch;
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+}
+
+.ward-prose:last-child {
+  margin-bottom: 0;
+}
+
+.ward-prose--spaced {
+  margin-top: var(--ward-space-6);
+}
+
+/* --- Forms --------------------------------------------------------------- */
+
+.ward-form {
+  display: grid;
+  gap: var(--ward-space-5);
+}
+
+.ward-field {
+  display: grid;
+  gap: var(--ward-space-2);
+}
+
+.ward-field > label {
+  font-size: var(--ward-text-sm);
+  font-weight: 600;
+  color: var(--ward-text);
+}
+
+.ward-field__hint {
+  font-size: var(--ward-text-xs);
+  color: var(--ward-text-faint);
+}
+
+.ward-field__hint--error {
+  color: var(--ward-danger);
+}
+
+.ward-input {
+  font: inherit;
+  width: 100%;
+  padding: var(--ward-space-3);
+  color: var(--ward-text);
+  background: var(--ward-surface);
+  border: var(--ward-rule) solid var(--ward-border-strong);
+  border-radius: var(--ward-radius);
+  transition: border-color var(--ward-transition);
+}
+
+.ward-input:hover:not(:disabled) {
+  border-color: var(--ward-text-faint);
+}
+
+.ward-input:focus-visible {
+  border-color: var(--ward-accent);
+  box-shadow: var(--ward-focus);
+  outline: none;
+}
+
+.ward-input[aria-invalid="true"] {
+  border-color: var(--ward-danger);
+}
+
+.ward-input:disabled {
+  background: var(--ward-surface-sunken);
+  color: var(--ward-text-faint);
+}
+
+/* --- Buttons ------------------------------------------------------------- */
+
+.ward-button {
+  font: inherit;
+  font-weight: 600;
+  padding: var(--ward-space-3) var(--ward-space-5);
+  color: var(--ward-accent-text);
+  background: var(--ward-accent);
+  border: var(--ward-rule) solid transparent;
+  border-radius: var(--ward-radius);
+  cursor: pointer;
+  transition:
+    background-color var(--ward-transition),
+    color var(--ward-transition);
+}
+
+.ward-button:hover:not(:disabled) {
+  background: var(--ward-accent-hover);
+}
+
+.ward-button:disabled {
+  cursor: not-allowed;
+  color: var(--ward-text-faint);
+  background: var(--ward-surface-sunken);
+  border-color: var(--ward-border);
+}
+
+/* The accent is spent once per screen, so every secondary action is an
+   outline. */
+.ward-button--quiet {
+  color: var(--ward-text);
+  background: transparent;
+  border-color: var(--ward-border-strong);
+}
+
+.ward-button--quiet:hover:not(:disabled) {
+  background: var(--ward-surface-sunken);
+}
+
+.ward-button--danger {
+  color: var(--ward-danger);
+  background: transparent;
+  border-color: var(--ward-danger);
+}
+
+.ward-button--danger:hover:not(:disabled) {
+  color: var(--ward-accent-text);
+  background: var(--ward-danger);
+}
+
+.ward-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ward-space-3);
+  align-items: center;
+}
+
+/* --- Links --------------------------------------------------------------- */
+
+.ward-link {
+  color: var(--ward-accent);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  border-radius: 2px;
+}
+
+.ward-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* --- Notices ------------------------------------------------------------- */
+
+/*
+ * One border, not two. An earlier pass gave these an accent stripe down the
+ * left edge, which put a second vertical rule inside a block already hanging
+ * off the jamb — the structure stopped meaning anything. A tinted ground and a
+ * hairline is enough.
+ */
+.ward-notice {
+  /* A bottom margin, because a notice is almost always followed by the thing
+     it is about — a form, a heading — and butting straight up against a field
+     label reads as part of the field. Stacked notices get the same gap. */
+  margin: 0 0 var(--ward-space-6);
+  padding: var(--ward-space-3) var(--ward-space-4);
+  font-size: var(--ward-text-sm);
+  border: var(--ward-rule) solid;
+  border-radius: var(--ward-radius);
+}
+
+.ward-notice > :first-child {
+  margin-top: 0;
+}
+
+.ward-notice > :last-child {
+  margin-bottom: 0;
+}
+
+.ward-notice--error {
+  color: var(--ward-danger);
+  background: var(--ward-danger-surface);
+  border-color: color-mix(in srgb, var(--ward-danger) 35%, transparent);
+}
+
+.ward-notice--wait {
+  color: var(--ward-notice);
+  background: var(--ward-notice-surface);
+  border-color: color-mix(in srgb, var(--ward-notice) 35%, transparent);
+}
+
+.ward-notice--info {
+  color: var(--ward-text-muted);
+  background: var(--ward-surface-sunken);
+  border-color: var(--ward-border);
+}
+
+/* --- Self-service -------------------------------------------------------- */
+
+/*
+ * A definition list, because that is what an identity is: a label and the value
+ * it names. Not a table — there is one row per fact, no columns to compare.
+ */
+.ward-facts {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) 1fr;
+  gap: var(--ward-space-2) var(--ward-space-5);
+  margin: 0;
+  font-size: var(--ward-text-sm);
+}
+
+.ward-facts > dt {
+  color: var(--ward-text-faint);
+}
+
+.ward-facts > dd {
+  margin: 0;
+  color: var(--ward-text);
+}
+
+/*
+ * Monospace for exactly one thing on this surface: the subject id. It is an
+ * opaque identifier somebody may have to read out or paste, and a proportional
+ * face makes `l1` and `O0` ambiguous. Everything else here is prose and is set
+ * as prose.
+ */
+.ward-mono {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-xs);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Grants. One row per app, roles beside it. The rule between rows is the whole
+ * structure — a grant list is a ledger, and a ledger has lines.
+ */
+.ward-grants {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--ward-rule) solid var(--ward-border);
+}
+
+.ward-grants > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ward-space-2) var(--ward-space-4);
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--ward-space-3) 0;
+  border-bottom: var(--ward-rule) solid var(--ward-border);
+}
+
+.ward-grants__app {
+  font-weight: 600;
+  font-size: var(--ward-text-sm);
+}
+
+.ward-grants__roles {
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+}
+
+/* A pending or unavailable control, stated rather than hidden. */
+.ward-unavailable {
+  padding: var(--ward-space-4);
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+  background: var(--ward-surface-sunken);
+  border: var(--ward-rule) dashed var(--ward-border-strong);
+  border-radius: var(--ward-radius);
+}
+
+.ward-unavailable > :first-child {
+  margin-top: 0;
+}
+
+.ward-unavailable > :last-child {
+  margin-bottom: 0;
+}
+
+/* Visually hidden, still announced. For the live region that reports a
+   state change nobody needs to see twice. */
+.ward-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

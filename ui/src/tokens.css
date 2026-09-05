@@ -19,67 +19,99 @@
  * So: near-monochrome, one accent used once per screen, generous vertical
  * rhythm, and no illustration. It should read as infrastructure that respects
  * you, not as a product introducing itself.
+ *
+ * Two things follow from that reading and are worth stating, because they look
+ * like omissions:
+ *
+ * - **No webfont, and none is coming.** A font on the login path is a render
+ *   block on the one page in the estate whose entire job is to be over in four
+ *   seconds. The personality has to come from the type *treatment* and from the
+ *   layout, which is a harder brief and the right one.
+ * - **No entrance motion.** There is nothing to reveal. The only motion in this
+ *   UI answers something a person did — a state changing, a countdown running
+ *   down — and `prefers-reduced-motion` still turns that off.
  * ---------------------------------------------------------------------------
  */
 
 :root {
-  /* Surfaces — warm-neutral rather than blue-grey, so it sits beside both
-     atrium's paper and newspapper's ink without arguing with either. */
-  --ward-bg: #f7f6f3;
-  --ward-surface: #ffffff;
-  --ward-surface-sunken: #efeeea;
-  --ward-border: #d9d7d0;
-  --ward-border-strong: #b4b1a7;
+  /* Surfaces — a pale limestone, cooler and greyer than a cream. Warm enough
+     to sit beside atrium's paper, mineral enough not to argue with
+     newspapper's ink, and specific enough that neither reads as its own. */
+  --ward-bg: #f2f1ec;
+  --ward-surface: #fdfdfc;
+  --ward-surface-sunken: #e7e6e0;
+  --ward-border: #d6d4cc;
+  --ward-border-strong: #a9a69b;
 
-  /* Text */
-  --ward-text: #1c1b18;
-  --ward-text-muted: #5f5c55;
-  --ward-text-faint: #8a867d;
+  /* Text. Three weights of presence, each with a job: the thing you read, the
+     thing that explains it, the thing that is only there if you look. All
+     three clear 4.5:1 on `--ward-bg` — `--ward-text-faint` at 4.95:1 is the
+     floor, and it is the reason that value is not lighter. */
+  --ward-text: #1a1c1a;
+  --ward-text-muted: #4d514b;
+  --ward-text-faint: #66695f;
 
-  /* One accent. Deep and desaturated: a threshold, not a call to action. */
-  --ward-accent: #3c4a3e;
-  --ward-accent-hover: #2c372e;
-  --ward-accent-text: #f7f6f3;
+  /* One accent, and once per screen. A deep lichen green: desaturated enough
+     to read as a threshold rather than as a call to action, dark enough to
+     carry white text at 8.9:1. */
+  --ward-accent: #35473c;
+  --ward-accent-hover: #24312a;
+  --ward-accent-text: #f4f5f1;
 
   /* States. `danger` is for destructive confirmations, not for form errors —
      a wrong password is ordinary and should not read as an alarm. */
-  --ward-danger: #8c2f22;
-  --ward-danger-surface: #fbeae7;
-  --ward-notice: #6b5410;
-  --ward-notice-surface: #fdf4dc;
+  --ward-danger: #8a2e21;
+  --ward-danger-surface: #f9eae7;
+  --ward-notice: #5e4c0e;
+  --ward-notice-surface: #faf2d8;
 
-  /* Type. A system stack on purpose: a webfont on the login path is a render
-     block on the one page whose whole job is to be fast, and this page is
-     seen for four seconds. */
-  --ward-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --ward-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas,
-    monospace;
+  /* Type. A system stack on purpose: see the header. */
+  --ward-font:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ward-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
   --ward-text-xs: 0.75rem;
   --ward-text-sm: 0.875rem;
   --ward-text-base: 1rem;
   --ward-text-lg: 1.25rem;
   --ward-text-xl: 1.75rem;
+  /* Added by brief 09 for the destination line — the one piece of type on this
+     surface that is allowed to be large. */
+  --ward-text-2xl: 2.375rem;
 
   /* Spacing — a 4px base, because forms live or die on consistent gaps. */
   --ward-space-1: 0.25rem;
   --ward-space-2: 0.5rem;
   --ward-space-3: 0.75rem;
   --ward-space-4: 1rem;
+  --ward-space-5: 1.25rem;
   --ward-space-6: 1.5rem;
   --ward-space-8: 2rem;
+  --ward-space-10: 2.5rem;
   --ward-space-12: 3rem;
+  --ward-space-16: 4rem;
 
   --ward-radius: 6px;
   --ward-radius-lg: 10px;
 
-  /* Shadows, barely. Depth here would make a door look like a dialog. */
-  --ward-shadow: 0 1px 2px rgb(28 27 24 / 6%), 0 1px 1px rgb(28 27 24 / 4%);
-  --ward-shadow-lg: 0 4px 16px rgb(28 27 24 / 8%);
+  /* The jamb. Structure on this surface is drawn with rules, not with cards:
+     a threshold has an edge you cross, and a rounded panel floating in the
+     middle of the viewport is a lobby. `strong` is the head of the rule, where
+     the crossing happens; `--ward-rule` is the rest of it. */
+  --ward-rule: 1px;
+  --ward-rule-strong: 2px;
 
-  --ward-focus: 0 0 0 3px rgb(60 74 62 / 28%);
+  /* Shadows, barely. Depth here would make a door look like a dialog. */
+  --ward-shadow: 0 1px 2px rgb(26 28 26 / 6%), 0 1px 1px rgb(26 28 26 / 4%);
+  --ward-shadow-lg: 0 4px 16px rgb(26 28 26 / 8%);
+
+  --ward-focus: 0 0 0 3px rgb(53 71 60 / 30%);
+  --ward-transition: 120ms ease;
+
   --ward-max-width: 26rem;
+  /* For the one screen that is read rather than crossed — self-service, where
+     a grant list needs a second column's worth of room. */
+  --ward-max-width-wide: 36rem;
 }
 
 /*
@@ -94,6 +126,7 @@
  *
  * Scope this by putting `data-ward-surface="console"` on a wrapper; the tokens
  * below re-point the same names, so components need no console-specific code.
+ * `app.tsx` already puts that attribute on the `/console` subtree.
  */
 [data-ward-surface="console"] {
   --ward-bg: #17181a;
@@ -135,6 +168,13 @@ body {
   font-size: var(--ward-text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/* The console re-points the tokens on a wrapper inside `<body>`, so the page
+   ground behind it has to be re-painted too or the login surface's limestone
+   shows through under a short console page. */
+body:has([data-ward-surface="console"]) {
+  background: #17181a;
 }
 
 /* Never remove a focus ring; this is a keyboard-first form surface. */

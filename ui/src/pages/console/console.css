@@ -1,0 +1,882 @@
+/*
+ * The console's stylesheet.
+ *
+ * ## Every colour here is a token, and that is a safety property
+ *
+ * There is not one hex value in this file. `tokens.css` (brief 09's, values
+ * theirs to change) re-points the whole `--ward-*` palette under
+ * `[data-ward-surface="console"]`, so consuming the names is what gives the
+ * console its own visual identity for free — and keeps it consistent when those
+ * values change underneath. `main.tsx` imports `tokens.css` for the whole SPA,
+ * so this file deliberately does not `@import` it again: two copies of the same
+ * custom properties in one bundle is a merge conflict waiting to happen.
+ *
+ * The identity is the point rather than the decoration. The console is
+ * superuser-only, every route on it changes authority, and its one credential
+ * cannot be revoked or rotated without a redeploy. Someone reaching for
+ * break-glass should be able to see, in the first quarter of a second and
+ * without reading a word, that this is not the ordinary login page.
+ *
+ * ## The one bold element
+ *
+ * A hazard band — a diagonally striped rule under the top bar, in
+ * `--ward-notice` on `--ward-surface-sunken`. It is the vernacular of the thing
+ * itself: a break-glass alarm, an electrical panel, a machine you are not
+ * supposed to be inside during normal operation. It costs one gradient and it
+ * is the only loud thing in here. Everything else is a quiet, dense ledger.
+ *
+ * ## Typography carries information
+ *
+ * `--ward-font-mono` is reserved for **opaque identifiers** — a subject, a
+ * slug, a role, a session id, an audit action, a target id. In this console,
+ * monospace means "an exact string Ward stores and never interprets". Prose is
+ * never mono and identifiers are never sans, so the operator can tell a value
+ * they may retype from a sentence describing it.
+ */
+
+/* --------------------------------------------------------------------------
+ * Frame
+ * ----------------------------------------------------------------------- */
+
+.wc {
+  min-height: 100vh;
+  background: var(--ward-bg);
+  color: var(--ward-text);
+  font-family: var(--ward-font);
+  display: flex;
+  flex-direction: column;
+}
+
+.wc-topbar {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ward-space-4);
+  flex-wrap: wrap;
+  padding: var(--ward-space-4) var(--ward-space-6) var(--ward-space-3);
+  background: var(--ward-surface-sunken);
+}
+
+.wc-wordmark {
+  font-size: var(--ward-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+/* The framing, not an eyebrow label: a plain sentence fragment, sentence case. */
+.wc-standing {
+  color: var(--ward-notice);
+  font-size: var(--ward-text-sm);
+}
+
+.wc-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--ward-space-4);
+}
+
+.wc-countdown {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wc-countdown[data-low="true"] {
+  color: var(--ward-notice);
+}
+
+/*
+ * The hazard band. 6px of diagonal stripe, drawn from tokens, and the single
+ * loudest thing in the console.
+ */
+.wc-hazard {
+  height: 6px;
+  flex: none;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--ward-notice) 0,
+    var(--ward-notice) 6px,
+    transparent 6px,
+    transparent 14px
+  );
+  background-color: var(--ward-surface-sunken);
+}
+
+.wc-body {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 0;
+}
+
+.wc-rail {
+  flex: none;
+  width: 12rem;
+  padding: var(--ward-space-6) var(--ward-space-3);
+  border-right: 1px solid var(--ward-border);
+  background: var(--ward-surface-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ward-space-1);
+}
+
+.wc-rail a,
+.wc-rail button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--ward-space-2) var(--ward-space-3);
+  border: 0;
+  border-radius: var(--ward-radius);
+  background: transparent;
+  color: var(--ward-text-muted);
+  font: inherit;
+  font-size: var(--ward-text-sm);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.wc-rail a:hover,
+.wc-rail button:hover {
+  background: var(--ward-surface);
+  color: var(--ward-text);
+}
+
+.wc-rail a[aria-current="page"] {
+  background: var(--ward-surface);
+  color: var(--ward-text);
+  /* The accent's one appearance in the rail: which surface you are on. */
+  box-shadow: inset 2px 0 0 var(--ward-accent);
+}
+
+.wc-rail-spacer {
+  flex: 1;
+  min-height: var(--ward-space-6);
+}
+
+.wc-main {
+  flex: 1;
+  min-width: 0;
+  padding: var(--ward-space-8) var(--ward-space-6) var(--ward-space-12);
+}
+
+.wc-main-inner {
+  max-width: var(--ward-max-width);
+}
+
+/* --------------------------------------------------------------------------
+ * Links
+ *
+ * Stated rather than inherited. `ward.css` styles brief 09's own `.ward-link`
+ * class and leaves a bare `<a>` to the user agent, which on this surface means
+ * a default blue on near-black — unreadable, and the one colour in the console
+ * that comes from nowhere.
+ * ----------------------------------------------------------------------- */
+
+.wc a,
+.wc-gate a {
+  color: var(--ward-accent);
+  text-underline-offset: 2px;
+}
+
+.wc a:hover,
+.wc-gate a:hover {
+  color: var(--ward-accent-hover);
+}
+
+/* The wordmark is a way home, not a call to action: no accent, no underline. */
+.wc-wordmark a {
+  color: var(--ward-text);
+  text-decoration: none;
+}
+
+.wc-wordmark a:hover {
+  color: var(--ward-text);
+  text-decoration: underline;
+}
+
+/* --------------------------------------------------------------------------
+ * Headings and prose
+ * ----------------------------------------------------------------------- */
+
+.wc-head {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ward-space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--ward-space-6);
+}
+
+.wc-head h1 {
+  font-size: var(--ward-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.wc-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--ward-space-2);
+}
+
+.wc-lede {
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-sm);
+  max-width: 68ch;
+  margin: 0 0 var(--ward-space-6);
+}
+
+.wc-back {
+  display: inline-block;
+  font-size: var(--ward-text-sm);
+  margin-bottom: var(--ward-space-3);
+}
+
+/* A rail entry is navigation, not a link in prose. */
+.wc-rail a,
+.wc-rail a:hover {
+  color: var(--ward-text-muted);
+}
+
+.wc-rail a:hover,
+.wc-rail a[aria-current="page"] {
+  color: var(--ward-text);
+}
+
+/* An opaque value Ward stores verbatim. See the note at the top of the file. */
+.wc-id {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------------------
+ * Panels — one authority-changing concern each
+ * ----------------------------------------------------------------------- */
+
+.wc-panel {
+  background: var(--ward-surface);
+  border: 1px solid var(--ward-border);
+  border-radius: var(--ward-radius-lg);
+  padding: var(--ward-space-6);
+  margin-bottom: var(--ward-space-6);
+}
+
+.wc-panel > h2 {
+  font-size: var(--ward-text-base);
+  font-weight: 600;
+  margin: 0 0 var(--ward-space-2);
+}
+
+.wc-panel-note {
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-sm);
+  max-width: 68ch;
+  margin: 0 0 var(--ward-space-4);
+}
+
+.wc-panel-note:last-child {
+  margin-bottom: 0;
+}
+
+.wc-panel[data-tone="danger"] {
+  border-color: var(--ward-danger);
+}
+
+.wc-panel[data-tone="notice"] {
+  border-color: var(--ward-notice);
+}
+
+/* --------------------------------------------------------------------------
+ * Tables — a ledger, not a card grid
+ * ----------------------------------------------------------------------- */
+
+.wc-table-scroll {
+  overflow-x: auto;
+}
+
+.wc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ward-text-sm);
+}
+
+.wc-table caption {
+  text-align: left;
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-sm);
+  padding-bottom: var(--ward-space-2);
+}
+
+.wc-table th,
+.wc-table td {
+  text-align: left;
+  padding: var(--ward-space-3);
+  border-bottom: 1px solid var(--ward-border);
+  vertical-align: baseline;
+}
+
+.wc-table thead th {
+  color: var(--ward-text-faint);
+  font-weight: 500;
+  border-bottom-color: var(--ward-border-strong);
+  white-space: nowrap;
+}
+
+.wc-table tbody tr:last-child th,
+.wc-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wc-table tbody tr:hover {
+  background: var(--ward-surface-sunken);
+}
+
+.wc-num {
+  font-family: var(--ward-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.wc-when {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-xs);
+  color: var(--ward-text-muted);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+ * State words
+ * ----------------------------------------------------------------------- */
+
+.wc-state {
+  font-size: var(--ward-text-sm);
+}
+
+.wc-state[data-state="disabled"] {
+  color: var(--ward-danger);
+}
+
+.wc-state[data-state="none"] {
+  color: var(--ward-text-faint);
+}
+
+.wc-state[data-state="open"] {
+  color: var(--ward-notice);
+}
+
+/* --------------------------------------------------------------------------
+ * Roles as a set: one chip each, one click to remove
+ * ----------------------------------------------------------------------- */
+
+.wc-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ward-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wc-role {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ward-space-2);
+  padding: var(--ward-space-1) var(--ward-space-1) var(--ward-space-1) var(--ward-space-3);
+  border: 1px solid var(--ward-border-strong);
+  border-radius: 999px;
+  background: var(--ward-surface-sunken);
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-sm);
+}
+
+.wc-role-drop {
+  border: 0;
+  background: transparent;
+  color: var(--ward-text-muted);
+  font: inherit;
+  line-height: 1;
+  padding: var(--ward-space-1) var(--ward-space-2);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.wc-role-drop:hover {
+  background: var(--ward-danger-surface);
+  color: var(--ward-danger);
+}
+
+.wc-app-grant {
+  padding: var(--ward-space-4) 0;
+  border-bottom: 1px solid var(--ward-border);
+}
+
+.wc-app-grant:last-of-type {
+  border-bottom: 0;
+}
+
+.wc-app-grant h3 {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-sm);
+  font-weight: 600;
+  margin: 0 0 var(--ward-space-1);
+}
+
+.wc-app-grant-meta {
+  color: var(--ward-text-faint);
+  font-size: var(--ward-text-xs);
+  margin: 0 0 var(--ward-space-3);
+}
+
+/* --------------------------------------------------------------------------
+ * Empty states — a designed sentence, never a grey dash
+ * ----------------------------------------------------------------------- */
+
+.wc-empty {
+  border: 1px dashed var(--ward-border-strong);
+  border-radius: var(--ward-radius);
+  padding: var(--ward-space-6);
+  background: var(--ward-surface-sunken);
+}
+
+.wc-empty h3 {
+  font-size: var(--ward-text-base);
+  font-weight: 600;
+  margin: 0 0 var(--ward-space-2);
+}
+
+.wc-empty p {
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-sm);
+  max-width: 66ch;
+  margin: 0;
+}
+
+.wc-empty p + p {
+  margin-top: var(--ward-space-2);
+}
+
+/* --------------------------------------------------------------------------
+ * Forms
+ * ----------------------------------------------------------------------- */
+
+.wc-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ward-space-4);
+  max-width: 30rem;
+}
+
+/*
+ * A horizontal form: the add-a-role row, the audit filters.
+ *
+ * `flex-direction: row` is stated because this class is applied *alongside*
+ * `.wc-form`, which is a column — omitting it leaves a column that merely looks
+ * right-aligned, with every field 12rem tall. Two classes on one element and
+ * one of them only half-overriding the other is the CSS failure that is easiest
+ * to write and hardest to see in a diff.
+ */
+.wc-form-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: var(--ward-space-3);
+  flex-wrap: wrap;
+  max-width: none;
+}
+
+/*
+ * A field is a `<p>` so the label, the input, the hint and the error are one
+ * paragraph-level unit. Two consequences have to be written out or they bite:
+ * the browser's default paragraph margin has to go, because `.wc-form` already
+ * sets the rhythm with `gap`; and `flex-basis` must NOT be set here. In the
+ * column form it would be read as a *height* — a field 12rem tall with 3rem of
+ * content in it — which is only sensible in the horizontal row below.
+ */
+.wc-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ward-space-1);
+  min-width: 0;
+  margin: 0;
+}
+
+.wc-form-row > .wc-field {
+  flex: 1 1 12rem;
+}
+
+.wc-field > label {
+  font-size: var(--ward-text-sm);
+  font-weight: 500;
+}
+
+.wc-field-hint {
+  color: var(--ward-text-faint);
+  font-size: var(--ward-text-xs);
+  margin: 0;
+  max-width: 60ch;
+}
+
+.wc-field input[type="text"],
+.wc-field input[type="password"],
+.wc-field select {
+  font: inherit;
+  font-size: var(--ward-text-sm);
+  padding: var(--ward-space-2) var(--ward-space-3);
+  border: 1px solid var(--ward-border-strong);
+  border-radius: var(--ward-radius);
+  background: var(--ward-surface-sunken);
+  color: var(--ward-text);
+  min-width: 0;
+  width: 100%;
+}
+
+/* An opaque identifier is typed as well as read, so the field is mono too. */
+.wc-field input[data-opaque="true"] {
+  font-family: var(--ward-font-mono);
+}
+
+.wc-field input::placeholder {
+  color: var(--ward-text-faint);
+}
+
+.wc-field-error {
+  color: var(--ward-danger);
+  font-size: var(--ward-text-xs);
+  margin: 0;
+}
+
+.wc-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ward-space-3);
+  font-size: var(--ward-text-sm);
+}
+
+.wc-check input {
+  margin: 0.2em 0 0;
+  accent-color: var(--ward-accent);
+}
+
+/* --------------------------------------------------------------------------
+ * Buttons. One accent per region; danger only where something is destroyed.
+ * ----------------------------------------------------------------------- */
+
+.wc-btn {
+  font: inherit;
+  font-size: var(--ward-text-sm);
+  padding: var(--ward-space-2) var(--ward-space-4);
+  border-radius: var(--ward-radius);
+  border: 1px solid var(--ward-border-strong);
+  background: var(--ward-surface-sunken);
+  color: var(--ward-text);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.wc-btn:hover:not(:disabled) {
+  border-color: var(--ward-text-faint);
+}
+
+.wc-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.wc-btn[data-tone="primary"] {
+  background: var(--ward-accent);
+  border-color: var(--ward-accent);
+  color: var(--ward-accent-text);
+  font-weight: 600;
+}
+
+.wc-btn[data-tone="primary"]:hover:not(:disabled) {
+  background: var(--ward-accent-hover);
+  border-color: var(--ward-accent-hover);
+}
+
+.wc-btn[data-tone="danger"] {
+  color: var(--ward-danger);
+  border-color: var(--ward-danger);
+  background: transparent;
+}
+
+.wc-btn[data-tone="danger"]:hover:not(:disabled) {
+  background: var(--ward-danger-surface);
+}
+
+.wc-btn-link {
+  border: 0;
+  background: transparent;
+  color: var(--ward-accent);
+  padding: 0;
+  font: inherit;
+  font-size: var(--ward-text-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wc-actions {
+  display: flex;
+  gap: var(--ward-space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* --------------------------------------------------------------------------
+ * Messages. `danger` is destruction, not a wrong password.
+ * ----------------------------------------------------------------------- */
+
+.wc-alert {
+  border: 1px solid var(--ward-border-strong);
+  border-radius: var(--ward-radius);
+  padding: var(--ward-space-3) var(--ward-space-4);
+  font-size: var(--ward-text-sm);
+  margin-bottom: var(--ward-space-4);
+}
+
+.wc-alert[data-tone="error"] {
+  border-color: var(--ward-danger);
+  background: var(--ward-danger-surface);
+  color: var(--ward-text);
+}
+
+.wc-alert[data-tone="notice"] {
+  border-color: var(--ward-notice);
+  background: var(--ward-notice-surface);
+}
+
+.wc-alert[data-tone="done"] {
+  border-color: var(--ward-border-strong);
+  background: var(--ward-surface-sunken);
+  color: var(--ward-text-muted);
+}
+
+.wc-alert h2 {
+  font-size: var(--ward-text-sm);
+  margin: 0 0 var(--ward-space-1);
+}
+
+.wc-alert p {
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Confirmation. A native <dialog>: focus trap and Escape for free.
+ * ----------------------------------------------------------------------- */
+
+.wc-dialog {
+  border: 1px solid var(--ward-border-strong);
+  border-radius: var(--ward-radius-lg);
+  background: var(--ward-surface);
+  color: var(--ward-text);
+  box-shadow: var(--ward-shadow-lg);
+  padding: var(--ward-space-6);
+  max-width: 34rem;
+  width: calc(100vw - 2 * var(--ward-space-6));
+  font-family: var(--ward-font);
+}
+
+.wc-dialog::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+.wc-dialog h2 {
+  font-size: var(--ward-text-lg);
+  margin: 0 0 var(--ward-space-3);
+}
+
+.wc-dialog p {
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-sm);
+  margin: 0 0 var(--ward-space-3);
+  max-width: 62ch;
+}
+
+.wc-dialog-actions {
+  display: flex;
+  gap: var(--ward-space-3);
+  justify-content: flex-end;
+  margin-top: var(--ward-space-6);
+}
+
+/* --------------------------------------------------------------------------
+ * Audit severities. The alarm is the only red thing in the log.
+ * ----------------------------------------------------------------------- */
+
+.wc-audit-row[data-severity="alarm"] {
+  background: var(--ward-danger-surface);
+}
+
+.wc-audit-row[data-severity="alarm"]:hover {
+  background: var(--ward-danger-surface);
+}
+
+.wc-action {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-xs);
+  color: var(--ward-text-faint);
+  display: block;
+}
+
+.wc-audit-label {
+  font-size: var(--ward-text-sm);
+}
+
+.wc-audit-row[data-severity="alarm"] .wc-audit-label {
+  color: var(--ward-danger);
+  font-weight: 600;
+}
+
+.wc-audit-row[data-severity="notice"] .wc-audit-label {
+  color: var(--ward-notice);
+}
+
+.wc-audit-row[data-severity="authority"] .wc-audit-label {
+  color: var(--ward-text);
+}
+
+.wc-audit-row[data-severity="benign"] .wc-audit-label {
+  color: var(--ward-text-muted);
+}
+
+.wc-audit-why {
+  color: var(--ward-text-muted);
+  font-size: var(--ward-text-xs);
+  margin: var(--ward-space-1) 0 0;
+  max-width: 74ch;
+}
+
+.wc-detail {
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-xs);
+  color: var(--ward-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: var(--ward-space-1) 0 0;
+}
+
+/* --------------------------------------------------------------------------
+ * The login screen. Deliberately not the shape of the ordinary login page.
+ * ----------------------------------------------------------------------- */
+
+.wc-gate {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ward-bg);
+  color: var(--ward-text);
+  font-family: var(--ward-font);
+}
+
+.wc-gate-inner {
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: var(--ward-space-8);
+  grid-template-columns: minmax(0, 26rem) minmax(0, 30rem);
+  padding: var(--ward-space-12) var(--ward-space-6);
+  margin: 0 auto;
+}
+
+.wc-gate h1 {
+  font-size: var(--ward-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin: 0 0 var(--ward-space-3);
+}
+
+.wc-gate-terms {
+  margin: 0;
+  font-size: var(--ward-text-sm);
+  color: var(--ward-text-muted);
+}
+
+.wc-gate-terms dt {
+  color: var(--ward-text);
+  font-weight: 600;
+  margin-top: var(--ward-space-4);
+}
+
+.wc-gate-terms dd {
+  margin: var(--ward-space-1) 0 0;
+  max-width: 46ch;
+}
+
+@media (width <= 60rem) {
+  .wc-gate-inner {
+    grid-template-columns: minmax(0, 34rem);
+  }
+
+  .wc-body {
+    flex-direction: column;
+  }
+
+  .wc-rail {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--ward-border);
+    padding: var(--ward-space-3);
+  }
+
+  .wc-rail a,
+  .wc-rail button {
+    width: auto;
+  }
+
+  .wc-rail a[aria-current="page"] {
+    box-shadow: inset 0 -2px 0 var(--ward-accent);
+  }
+
+  .wc-rail-spacer {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .wc-main {
+    padding: var(--ward-space-6) var(--ward-space-4) var(--ward-space-12);
+  }
+}
+
+/* A screen-reader-only live region for the outcome of a write. */
+.wc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The add-a-role row sits under the grant list it extends. */
+.wc-grant-add {
+  margin-top: var(--ward-space-6);
+}
+
+/*
+ * The button that ends a horizontal form. Not a `.wc-field`: a field is a
+ * label-and-input column, and putting a button in one stretches it to the
+ * column's width and pushes it out of line with the inputs beside it.
+ *
+ * Fields in a row form carry no `hint` for the same alignment reason — a hint
+ * under one input and not another bottom-aligns the two at different heights.
+ * The explanation goes in a `.wc-panel-note` under the whole row instead.
+ */
+.wc-row-actions {
+  flex: 0 0 auto;
+  margin: 0;
+  display: flex;
+  gap: var(--ward-space-2);
+}
