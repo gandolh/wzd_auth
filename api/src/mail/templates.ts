@@ -35,6 +35,23 @@ import type { OutgoingMail } from "./transport.js";
 export const WARD_API_PREFIX = "/ward-api";
 
 /**
+ * Where a **person** lands when they click the link in their inbox: brief 09's
+ * `/ward/verify` screen, served by the UI bundle.
+ *
+ * This used to be `${WARD_API_PREFIX}/verify`, the API's own server-rendered
+ * page, which meant the one screen built for this moment was not on the path
+ * anybody actually takes. Both pages work — the API route stays, because it is
+ * what a non-browser client uses and it is content-negotiated for exactly that
+ * — but the mail goes to the UI, which can say "your account works, the address
+ * just isn't confirmed" and offer somewhere to go next.
+ *
+ * Note that the UI page then calls `GET /ward-api/verify` itself to spend the
+ * token, so the API route is still what performs the verification. Only the
+ * first hop moved.
+ */
+export const WARD_UI_VERIFY_PATH = "/ward/verify";
+
+/**
  * The clickable verification URL.
  *
  * `publicOrigin` must be a bare origin — `config.ts` validates
@@ -49,7 +66,7 @@ export const WARD_API_PREFIX = "/ward-api";
  * special character.
  */
 export function verificationLink(publicOrigin: string, token: string): string {
-  return `${publicOrigin}${WARD_API_PREFIX}/verify?token=${encodeURIComponent(token)}`;
+  return `${publicOrigin}${WARD_UI_VERIFY_PATH}?token=${encodeURIComponent(token)}`;
 }
 
 export interface VerificationMailParams {

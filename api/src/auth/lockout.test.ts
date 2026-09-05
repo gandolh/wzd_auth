@@ -215,6 +215,36 @@ describe("per-surface budgets", () => {
     recordFailure(console_("203.0.113.9"));
     expect(lockoutEntryCountForTests()).toBe(2);
   });
+
+  /**
+   * `POST /account/password` takes the **current** password as input, so it is
+   * a credential surface and gets its own member. Borrowing `"login"` would be
+   * worse here than the console case above: guessing a current password would
+   * spend the budget for the login form, which is precisely how the person
+   * would recover from having had their password changed under them.
+   */
+  it("gives /account/password its own budget in both directions", () => {
+    const selfService = (address: string, account?: string): LockoutTarget =>
+      account === undefined
+        ? { surface: "account_password", address }
+        : { surface: "account_password", address, account };
+
+    for (let i = 0; i < LOCKOUT_MAX_FAILURES + 1; i += 1) {
+      recordFailure(selfService("203.0.113.9", "alice"));
+    }
+
+    expect(checkLockout(selfService("203.0.113.9")).allowed).toBe(false);
+    expect(checkLockout(login("203.0.113.9"))).toEqual({ allowed: true });
+    expect(checkLockout(console_("203.0.113.9"))).toEqual({ allowed: true });
+
+    // And the other way round.
+    resetLockoutForTests();
+    for (let i = 0; i < LOCKOUT_MAX_FAILURES + 1; i += 1) {
+      recordFailure(login("203.0.113.9", "alice"));
+    }
+    expect(checkLockout(login("203.0.113.9")).allowed).toBe(false);
+    expect(checkLockout(selfService("203.0.113.9"))).toEqual({ allowed: true });
+  });
 });
 
 describe("expiry", () => {

@@ -12,6 +12,7 @@ import {
   listLiveTokensForSubject,
   newFamilyId,
   revokeAllForSubject,
+  revokeAllForSubjectExceptFamily,
   revokeFamily,
   revokeRefreshToken,
 } from "./refresh-tokens.js";
@@ -162,6 +163,85 @@ describe("account-wide operations", () => {
     expect(listLiveTokensForSubject(db, subject)).toHaveLength(3);
     expect(revokeAllForSubject(db, subject, "admin")).toBe(3);
     expect(listLiveTokensForSubject(db, subject)).toHaveLength(0);
+  });
+
+  /**
+   * "Sign out my other devices" — the only self-serve response available to
+   * somebody who suspects their session was stolen, because owner-issued
+   * accounts have no verified email and therefore no recovery channel
+   * (`corpus/wiki/decisions.md`). It is worthless if it signs the caller out
+   * too, so the spared family is the assertion that matters.
+   */
+  describe("revoking every family but one", () => {
+    it("leaves the spared family live and kills the rest", () => {
+      const mine = newFamilyId();
+      mint(mine);
+      mint(newFamilyId());
+      mint(newFamilyId());
+
+      expect(revokeAllForSubjectExceptFamily(db, subject, mine, "logout")).toBe(2);
+
+      const live = listLiveTokensForSubject(db, subject);
+      expect(live).toHaveLength(1);
+      expect(live[0]!.family_id).toBe(mine);
+    });
+
+    it("records the reason on the rows it killed and nothing on the one it spared", () => {
+      const mine = newFamilyId();
+      const theirs = newFamilyId();
+      mint(mine);
+      mint(theirs);
+
+      revokeAllForSubjectExceptFamily(db, subject, mine, "logout");
+
+      expect(listFamily(db, theirs).every((row) => row.revoked_reason === "logout")).toBe(true);
+      expect(listFamily(db, mine).every((row) => row.revoked_at === null)).toBe(true);
+    });
+
+    it("spares every live row in the family, not just the newest", () => {
+      // A raced refresh can leave two live rows in one family inside the grace
+      // window. Both belong to the device being spared.
+      const mine = newFamilyId();
+      mint(mine);
+      mint(mine);
+      mint(newFamilyId());
+
+      expect(revokeAllForSubjectExceptFamily(db, subject, mine, "logout")).toBe(1);
+      expect(listLiveTokensForSubject(db, subject)).toHaveLength(2);
+    });
+
+    it("is a no-op when the spared family is the only one", () => {
+      const mine = newFamilyId();
+      mint(mine);
+
+      expect(revokeAllForSubjectExceptFamily(db, subject, mine, "logout")).toBe(0);
+      expect(listLiveTokensForSubject(db, subject)).toHaveLength(1);
+    });
+
+    it("never touches another account", () => {
+      const bob = seedUser(db, "bob").subject;
+      const bobToken = generateRefreshToken();
+      insertRefreshToken(db, {
+        tokenHash: hashRefreshToken(bobToken),
+        subject: bob,
+        familyId: newFamilyId(),
+        expiresAt: inThirtyDays(),
+      });
+
+      mint(newFamilyId());
+      revokeAllForSubjectExceptFamily(db, subject, "no-such-family", "logout");
+
+      expect(listLiveTokensForSubject(db, bob)).toHaveLength(1);
+    });
+
+    it("leaves an already-dead row's original reason alone", () => {
+      const doomed = newFamilyId();
+      mint(doomed);
+      revokeFamily(db, doomed, "reuse_detected");
+
+      expect(revokeAllForSubjectExceptFamily(db, subject, newFamilyId(), "logout")).toBe(0);
+      expect(listFamily(db, doomed)[0]!.revoked_reason).toBe("reuse_detected");
+    });
   });
 
   it("live listing excludes expired rows even when they were never revoked", () => {

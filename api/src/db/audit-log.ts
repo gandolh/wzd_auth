@@ -167,7 +167,39 @@ export function parseGrantTargetId(targetId: string): GrantTarget | undefined {
 
 /** Filters the console offers. Every field is optional; omitted means unfiltered. */
 export interface AuditQuery {
+  /**
+   * An ordinary account's subject. **Only ever matches `actor_kind = 'account'`
+   * rows**, because a CHECK ties the two together — so this filter can never
+   * find a console action, and on its own it cannot satisfy "filterable by
+   * actor". See `actorKind` below.
+   */
   actorSubject?: string;
+  /**
+   * `superuser` | `account` | `system`.
+   *
+   * **This is the filter that makes the console's own trail findable.** Every
+   * mutation on the `/console` surface is written `actor_kind='superuser'` with
+   * `actor_subject=NULL` (`audit.ts`'s `consoleActor`, and
+   * `corpus/wiki/decisions-admin.md` on why there is no row to point at), so
+   * before this existed the only actor filter was on a column that is null for
+   * exactly the actor that matters most: the break-glass credential, whose
+   * audit trail is the *only* observability it has because it cannot be revoked
+   * or rotated without a redeploy.
+   *
+   * There is no index on `actor_kind` — `audit_log_actor_idx` covers
+   * `actor_subject` — so this is a scan. That is deliberate rather than
+   * overlooked: this is the console's query, run at human speed against a table
+   * that grows with authority changes rather than with traffic, and adding an
+   * index would need a migration for no measurable gain here.
+   */
+  actorKind?: ActorKind;
+  /**
+   * Exact match on `actor_label` — a username, the literal `superuser`, or a
+   * job name. Not a prefix or a `LIKE`: the column is free text written by
+   * Ward, an operator filtering by it already knows the value they want, and a
+   * pattern match would put user-controlled wildcards into a scan.
+   */
+  actorLabel?: string;
   targetKind?: TargetKind;
   targetId?: string;
   action?: string;
@@ -198,6 +230,14 @@ export function listAudit(db: Database.Database, query: AuditQuery = {}): AuditL
   if (query.actorSubject !== undefined) {
     clauses.push("actor_subject = ?");
     params.push(query.actorSubject);
+  }
+  if (query.actorKind !== undefined) {
+    clauses.push("actor_kind = ?");
+    params.push(query.actorKind);
+  }
+  if (query.actorLabel !== undefined) {
+    clauses.push("actor_label = ?");
+    params.push(query.actorLabel);
   }
   if (query.targetKind !== undefined) {
     clauses.push("target_kind = ?");

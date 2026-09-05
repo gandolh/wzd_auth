@@ -135,12 +135,20 @@ export const LOCKOUT_AMBIGUOUS_ADDRESS_WARN_INTERVAL_SECONDS = 5 * 60;
  * - `"register"` — `POST /register`, the estate's only anonymous write surface
  *   (brief 07). It is throttled hardest and shares nothing: a registration
  *   flood must not stop the people who already have accounts from signing in.
+ * - `"account_password"` — `POST /account/password`, a person changing their
+ *   own password. It takes the **current** password as input, so it is a
+ *   credential surface and needs a budget; and it must not be `"login"`,
+ *   because the two fail in opposite directions. Guessing a current password
+ *   here needs a live session cookie first, so the counter exists to bound a
+ *   borrowed laptop or an XSS rather than the open internet — while spending
+ *   this budget must never be able to lock the same address out of `/login`,
+ *   which is how the person would recover.
  *
  * **Adding a surface means adding a member here**, not borrowing an existing
  * one. The union is closed so that borrowing is a compile error rather than a
  * quiet coupling nobody notices until the two interfere.
  */
-export type LockoutSurface = "login" | "console" | "register";
+export type LockoutSurface = "login" | "console" | "register" | "account_password";
 
 /** Who is attempting what, from where. */
 export interface LockoutTarget {

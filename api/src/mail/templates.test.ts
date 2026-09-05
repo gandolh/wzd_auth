@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { verificationLink, verificationMail, WARD_API_PREFIX } from "./templates.js";
+import {
+  verificationLink,
+  verificationMail,
+  WARD_API_PREFIX,
+  WARD_UI_VERIFY_PATH,
+} from "./templates.js";
 
 /**
  * The templates are pure, so these tests need no environment, no database and
@@ -11,15 +16,27 @@ import { verificationLink, verificationMail, WARD_API_PREFIX } from "./templates
 
 describe("verificationLink", () => {
   /**
-   * The prefix is the browser-visible half. Caddy serves Ward with
-   * `handle_path /ward-api/*` and strips it, so a link without it 404s in
-   * production while every `app.inject()` test passes — the same trap the
-   * refresh cookie's `Path` documents.
+   * **The link goes to the UI screen, not to the API route.**
+   *
+   * Both pages verify an address, and for a while this pointed at
+   * `/ward-api/verify` — the API's own server-rendered page — which meant
+   * brief 09's `/ward/verify` screen was built for a moment nobody reached.
+   * The API route is deliberately kept (a non-browser client uses it, and it is
+   * content-negotiated for exactly that); only the URL a person is mailed
+   * moved.
+   *
+   * Both paths are still **browser-visible** halves. Caddy serves Ward with
+   * `handle_path /ward-api/*` and strips it, so a link spelled the Fastify way
+   * 404s in production while every `app.inject()` test passes — the same trap
+   * the refresh cookie's `Path` documents.
    */
-  it("points at the browser-visible /ward-api path, not the Fastify route", () => {
+  it("points at the UI verification screen, not at the API route", () => {
     const link = verificationLink("https://gandolh.ro", "abc123");
-    expect(link).toBe("https://gandolh.ro/ward-api/verify?token=abc123");
+    expect(link).toBe("https://gandolh.ro/ward/verify?token=abc123");
+    expect(WARD_UI_VERIFY_PATH).toBe("/ward/verify");
+    // Still exported, because the API route it names has not moved.
     expect(WARD_API_PREFIX).toBe("/ward-api");
+    expect(link).not.toContain("/ward-api/");
   });
 
   it("percent-encodes the token", () => {
@@ -34,7 +51,7 @@ describe("verificationMail", () => {
     to: "alice@example.com",
     username: "Alice",
     appName: "Public Resource Map",
-    link: "https://gandolh.ro/ward-api/verify?token=deadbeef",
+    link: "https://gandolh.ro/ward/verify?token=deadbeef",
     expiresInHours: 24,
   });
 
@@ -50,7 +67,7 @@ describe("verificationMail", () => {
 
   it("carries the link, the username and the expiry in a plain-text body", () => {
     expect(mail.to).toBe("alice@example.com");
-    expect(mail.text).toContain("https://gandolh.ro/ward-api/verify?token=deadbeef");
+    expect(mail.text).toContain("https://gandolh.ro/ward/verify?token=deadbeef");
     expect(mail.text).toContain("Alice");
     expect(mail.text).toContain("24 hours");
     // No HTML part, and no markup in the text one — see the module header.

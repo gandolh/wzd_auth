@@ -132,6 +132,12 @@ const stmts = prepareOnce((db: Database.Database) => ({
       WHERE subject = ? AND revoked_at IS NULL`,
   ),
 
+  revokeSubjectExceptFamily: db.prepare<[string, string, string, string]>(
+    `UPDATE refresh_tokens
+        SET revoked_at = ?, revoked_reason = ?
+      WHERE subject = ? AND family_id <> ? AND revoked_at IS NULL`,
+  ),
+
   liveForSubject: db.prepare<[string, string], RefreshTokenRow>(
     `SELECT * FROM refresh_tokens
       WHERE subject = ? AND revoked_at IS NULL AND expires_at > ?
@@ -229,6 +235,40 @@ export function revokeAllForSubject(
   now: string = new Date().toISOString(),
 ): number {
   return stmts(db).revokeSubject.run(now, reason, subject).changes;
+}
+
+/**
+ * Kill every live token for an account **except** the one family named — "sign
+ * out my other devices", and the only self-serve response available to someone
+ * who suspects their session was stolen (`corpus/wiki/decisions.md`).
+ *
+ * The same single-statement shape as `revokeAllForSubject`, and that matters
+ * rather than being tidy: rotation depends on this table's writes being atomic
+ * against a concurrent `claimRefreshToken`. A read-then-loop version would open
+ * a window in which a family the caller decided to spare has already rotated,
+ * so the successor's hash is not in the list being revoked and the "other"
+ * device survives the sweep it was the point of.
+ *
+ * `family_id <> ?` is spelled with SQL's inequality operator, not `!=`, and
+ * NULL is not a concern: `family_id` is `NOT NULL` in the schema, so the
+ * comparison is never unknown and no live row can escape the predicate by
+ * being null.
+ *
+ * Returns how many **rows** it revoked. A family contributes exactly one live
+ * row in normal operation — rotation revokes the predecessor as it issues the
+ * successor — but a raced refresh can leave two live rows in one family inside
+ * `REFRESH_RACE_GRACE_SECONDS`, so a caller reporting "how many other sessions
+ * ended" to a person must count distinct families rather than trusting this
+ * number to be one per device.
+ */
+export function revokeAllForSubjectExceptFamily(
+  db: Database.Database,
+  subject: string,
+  familyId: string,
+  reason: RevokedReason,
+  now: string = new Date().toISOString(),
+): number {
+  return stmts(db).revokeSubjectExceptFamily.run(now, reason, subject, familyId).changes;
 }
 
 /** Live sessions for an account, newest first. The console's session list. */

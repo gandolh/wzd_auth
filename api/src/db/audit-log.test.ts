@@ -271,4 +271,67 @@ describe("reading the log", () => {
     expect(listAudit(db, { action: "'; DROP TABLE audit_log; --" })).toEqual([]);
     expect(countAudit(db)).toBe(6);
   });
+
+  /**
+   * **`actorSubject` alone cannot express "what did the console do".**
+   *
+   * A CHECK ties `actor_subject IS NOT NULL` to `actor_kind = 'account'`, so
+   * every row the console writes has a null subject — and the console is the
+   * only surface where authority changes, which is the one thing this table
+   * exists to record. `actorKind` and `actorLabel` are what make that trail
+   * findable; `GET /console/audit` is built on them.
+   */
+  describe("filtering by actor kind and label", () => {
+    beforeEach(() => {
+      recordAudit(db, {
+        actorKind: "superuser",
+        actorLabel: SUPERUSER_LABEL,
+        action: "app.registration",
+        targetKind: "app",
+        targetId: "prm",
+      });
+      recordAudit(db, {
+        actorKind: "system",
+        actorLabel: "reuse-sweep",
+        action: "session.reuse_detected",
+        targetKind: "session",
+        targetId: "family-1",
+      });
+    });
+
+    it("finds the console's rows, which no subject filter can", () => {
+      const superuserRows = listAudit(db, { actorKind: "superuser" });
+      expect(superuserRows.map((row) => row.action)).toEqual([
+        "app.registration",
+        ...Array.from({ length: 5 }, () => "grant.create"),
+      ]);
+      expect(superuserRows.every((row) => row.actor_subject === null)).toBe(true);
+
+      // The filter that existed before, against the column that is null for
+      // exactly these rows.
+      expect(listAudit(db, { actorSubject: SUPERUSER_LABEL })).toEqual([]);
+    });
+
+    it("separates system rows from superuser rows", () => {
+      expect(listAudit(db, { actorKind: "system" }).map((row) => row.actor_label)).toEqual([
+        "reuse-sweep",
+      ]);
+    });
+
+    it("matches actor_label exactly, never as a prefix", () => {
+      expect(listAudit(db, { actorLabel: "reuse-sweep" })).toHaveLength(1);
+      expect(listAudit(db, { actorLabel: "reuse" })).toEqual([]);
+    });
+
+    it("binds both new values rather than interpolating them", () => {
+      expect(listAudit(db, { actorLabel: "'; DROP TABLE audit_log; --" })).toEqual([]);
+      // The table is still there.
+      expect(countAudit(db)).toBe(7);
+    });
+
+    it("combines with the existing filters", () => {
+      expect(listAudit(db, { actorKind: "superuser", action: "app.registration" })).toHaveLength(1);
+      expect(listAudit(db, { actorKind: "system", action: "app.registration" })).toEqual([]);
+    });
+  });
 });

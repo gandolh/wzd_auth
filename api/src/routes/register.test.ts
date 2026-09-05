@@ -157,24 +157,32 @@ async function linkFromOutbox(): Promise<string> {
 }
 
 /**
- * Follow a mailed link, doing to it exactly what Caddy does.
+ * The Fastify path a mailed link ends up hitting.
  *
- * The link is the **browser-visible** URL and therefore carries the
- * `/ward-api` prefix; `handle_path /ward-api/*` strips it before Ward sees the
- * request, so the Fastify route is `/verify`. Asserting the prefix was there
- * and then removing it is the only way an `app.inject()` test can catch the
- * mistake of mailing a link without it — which would 404 in production while
- * every test passed.
+ * The mailed link is the **browser-visible** URL of brief 09's verification
+ * screen, `/ward/verify?token=…` — a static page, not a Ward route. That page
+ * then spends the token by calling `GET /ward-api/verify?token=…`, and Caddy's
+ * `handle_path /ward-api/*` strips the prefix, so the Fastify route is
+ * `/verify`.
+ *
+ * Asserting the mailed prefix and then translating it is the only way an
+ * `app.inject()` test can catch either half of the mistake: mailing a link the
+ * UI does not serve, or mailing one spelled the Fastify way, both of which 404
+ * in production while every test passes.
  */
+function apiPathFor(link: string): string {
+  const url = new URL(link);
+  expect(url.origin).toBe(ORIGIN);
+  expect(url.pathname).toBe("/ward/verify");
+  return `/verify${url.search}`;
+}
+
+/** Follow a mailed link the way the UI screen behind it does. */
 async function follow(
   link: string,
   headers: Record<string, string> = {},
 ): Promise<LightMyRequestResponse> {
-  const url = new URL(link);
-  expect(url.origin).toBe(ORIGIN);
-  expect(url.pathname.startsWith("/ward-api/")).toBe(true);
-  const stripped = url.pathname.slice("/ward-api".length);
-  return app.inject({ method: "GET", url: `${stripped}${url.search}`, headers });
+  return app.inject({ method: "GET", url: apiPathFor(link), headers });
 }
 
 describe("the public_registration flag", () => {
@@ -442,7 +450,7 @@ describe("the file transport, end to end, with no SMTP credentials", () => {
 
     // ...carrying the clickable link, prefix and all.
     const link = await linkFromOutbox();
-    expect(link.startsWith(`${ORIGIN}/ward-api/verify?token=`)).toBe(true);
+    expect(link.startsWith(`${ORIGIN}/ward/verify?token=`)).toBe(true);
     expect(new URL(link).searchParams.get("token")).toMatch(/^[0-9a-f]{64}$/);
 
     // Following it verifies the address.
@@ -474,7 +482,7 @@ describe("the file transport, end to end, with no SMTP credentials", () => {
       now: new Date(Date.now() - 25 * 60 * 60 * 1000),
     });
 
-    const response = await follow(`${ORIGIN}/ward-api/verify?token=${stale.token}`);
+    const response = await follow(`${ORIGIN}/ward/verify?token=${stale.token}`);
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "expired_token" });
     expect(mod.users.findUserBySubject(db, subject)!.email_verified).toBe(0);
@@ -496,12 +504,8 @@ describe("the file transport, end to end, with no SMTP credentials", () => {
   it("has no HEAD route, so a link previewer cannot burn the token", async () => {
     const subject = (await register(goodBody())).json().subject as string;
     const link = await linkFromOutbox();
-    const url = new URL(link);
 
-    const head = await app.inject({
-      method: "HEAD",
-      url: `${url.pathname.slice("/ward-api".length)}${url.search}`,
-    });
+    const head = await app.inject({ method: "HEAD", url: apiPathFor(link) });
     expect(head.statusCode).toBe(404);
     expect(mod.users.findUserBySubject(db, subject)!.email_verified).toBe(0);
 

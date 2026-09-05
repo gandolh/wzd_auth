@@ -116,3 +116,69 @@ describe("the error handler", () => {
     expect(jwks.json<{ keys: unknown[] }>().keys.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Every route is registered, and every gated one is gated.
+ *
+ * A route with a full test suite of its own that `app.ts` never registers
+ * passes every test it has and 404s in production. `hasRoute` asks the question
+ * without a request, so it works for the routes that would otherwise need a
+ * migrated database on disk; the `401`s below are asserted with real requests,
+ * because "registered" and "closed" are different claims.
+ */
+describe("the routes buildApp wires in", () => {
+  it("registers every path, including the ones added to close the UI gaps", () => {
+    for (const route of [
+      { method: "POST" as const, url: "/login" },
+      { method: "POST" as const, url: "/refresh" },
+      { method: "POST" as const, url: "/logout" },
+      { method: "POST" as const, url: "/introspect" },
+      { method: "POST" as const, url: "/console/login" },
+      { method: "GET" as const, url: "/console/apps" },
+      { method: "GET" as const, url: "/console/grants" },
+      { method: "GET" as const, url: "/console/accounts" },
+      // The five that brief 09 and brief 10 reported missing.
+      { method: "GET" as const, url: "/console/audit" },
+      { method: "GET" as const, url: "/console/accounts/:subject/sessions" },
+      { method: "DELETE" as const, url: "/console/accounts/:subject/sessions/:familyId" },
+      { method: "POST" as const, url: "/console/accounts/:subject/sessions/revoke" },
+      { method: "GET" as const, url: "/account" },
+      { method: "POST" as const, url: "/account/password" },
+      { method: "POST" as const, url: "/account/sessions/revoke-others" },
+      { method: "GET" as const, url: "/apps" },
+      { method: "POST" as const, url: "/register" },
+    ]) {
+      expect(app.hasRoute(route), `${route.method} ${route.url}`).toBe(true);
+    }
+  });
+
+  it("keeps the new console routes behind the superuser gate", async () => {
+    for (const init of [
+      { method: "GET" as const, url: "/console/audit" },
+      { method: "GET" as const, url: "/console/accounts/deadbeef/sessions" },
+      { method: "DELETE" as const, url: "/console/accounts/deadbeef/sessions/abc" },
+      { method: "POST" as const, url: "/console/accounts/deadbeef/sessions/revoke" },
+    ]) {
+      const response = await app.inject(init);
+      expect(response.statusCode, init.url).toBe(401);
+      expect(response.json()).toEqual({ error: "unauthorized" });
+    }
+  });
+
+  /**
+   * The self-service routes are **not** the console: they authenticate an
+   * ordinary account from `ward_session`, and with no cookie they answer `401`
+   * without reaching the database.
+   */
+  it("closes the self-service routes to an anonymous caller", async () => {
+    for (const init of [
+      { method: "GET" as const, url: "/account" },
+      { method: "POST" as const, url: "/account/password" },
+      { method: "POST" as const, url: "/account/sessions/revoke-others" },
+    ]) {
+      const response = await app.inject(init);
+      expect(response.statusCode, init.url).toBe(401);
+      expect(response.json()).toEqual({ error: "unauthorized" });
+    }
+  });
+});

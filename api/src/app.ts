@@ -7,6 +7,10 @@ import { introspectRoutes } from "./routes/introspect.js";
 import { adminAppsRoutes } from "./routes/admin/apps.js";
 import { adminGrantsRoutes } from "./routes/admin/grants.js";
 import { adminAccountsRoutes } from "./routes/admin/accounts.js";
+import { adminSessionsRoutes } from "./routes/admin/sessions.js";
+import { adminAuditRoutes } from "./routes/admin/audit.js";
+import { accountRoutes } from "./routes/account.js";
+import { publicAppsRoutes } from "./routes/public-apps.js";
 import { registerRoutes } from "./routes/register.js";
 
 /**
@@ -85,15 +89,42 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(consoleRoutes);
   await app.register(introspectRoutes);
 
-  // The three admin plugins each attach `requireConsoleSession` as a
+  // The five admin plugins each attach `requireConsoleSession` as a
   // plugin-scope preHandler, so registering them here does not open anything —
   // they gate themselves. Their paths all sit under `/console/` and that is
   // functional rather than cosmetic: the `ward_console` cookie is scoped to
   // `Path=/ward-api/console`, so a route mounted anywhere else would simply
   // never receive it.
+  //
+  // `adminSessionsRoutes` adds paths *under* `/console/accounts/:subject`,
+  // which `adminAccountsRoutes` already claims. That is not a conflict — the
+  // parameter is named `:subject` in both, so find-my-way merges the two into
+  // one radix tree — but the two plugins must keep agreeing on that name, or
+  // Fastify refuses to boot with a parametric-conflict error rather than
+  // failing at request time.
   await app.register(adminAppsRoutes);
   await app.register(adminGrantsRoutes);
   await app.register(adminAccountsRoutes);
+  await app.register(adminSessionsRoutes);
+  await app.register(adminAuditRoutes);
+
+  /**
+   * The self-service surface, authenticated as an **ordinary account** from the
+   * `ward_session` cookie — emphatically not through the console, which is
+   * superuser-only by decision and has no second path into it. See the header
+   * of `routes/account.ts`.
+   */
+  await app.register(accountRoutes);
+
+  /**
+   * `GET /apps` — the only **anonymous read** in the estate.
+   *
+   * Registered next to the anonymous write below so that what an
+   * unauthenticated caller can reach is visible in one place. It answers the
+   * apps whose `public_registration` flag is on, and nothing about the ones it
+   * is off for.
+   */
+  await app.register(publicAppsRoutes);
 
   /**
    * Public registration and email verification, last because it is the only
