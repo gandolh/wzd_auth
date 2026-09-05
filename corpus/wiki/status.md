@@ -34,7 +34,7 @@ build's to make.
 | Briefs done | **11** — 00 · 01 · 02 · 03 · 04 · 05 · 06 · 07 · 08 · [09](../briefs/done/09-login-ui.md) · [10](../briefs/done/10-console-ui.md), all in [briefs/done/](../briefs/done/); **5 left**, and every one of them touches another repo |
 | Service code | **Complete.** API, `@ward/client`, and the UI at `/ward` — login, register, verify, self-service, and the console |
 | Tests | **831** across three workspaces — 9 drive the real `buildApp()` end to end |
-| Deploy entry in `vps-deploy` | **None** |
+| Deploy entry in `vps-deploy` | **Written, never run.** `stacks/ward.ts` exists and is thorough — see [the note below](#brief-11-is-already-written-in-vps-deploy) |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
 ## What is actually known
@@ -72,6 +72,33 @@ against a real browser on the real origin. Every verification so far has been
 The cookie paths (`/ward-api/refresh`, `/ward-api/console`) are the part most
 likely to be wrong in a way no local test can show, because `handle_path`
 strips a prefix that nothing local strips.
+
+## Brief 11 is already written in vps-deploy
+
+**Checked 2026-09-04. Brief 11's work exists, in a shape the brief does not
+describe.** The brief says `vps-deploy/projects/<name>/deploy.ts`; that layout
+is gone — vps-deploy was reorganized into a CDK-style construct tree, and Ward
+is `stacks/ward.ts`, constructed **first** in `app.ts` with the comment "five
+apps will eventually authenticate against it".
+
+It is more thorough than the brief asked for, and its assumptions were verified
+against what waves 1–6 actually built:
+
+| Assumption | Verified |
+|---|---|
+| `keygen` takes an explicit path and needs no Ward environment | ✅ runs under `env -i`, writes `0600`, refuses to overwrite |
+| `verifyAssetBase` — `index.html` must reference `/ward/assets/` | ✅ it does |
+| `pendingBuild` skips the UI until briefs 09/10 land | ✅ gates on `hasBuildScript`, which now exists — **the comment is stale, the logic self-heals** |
+| Test files excluded from `api/dist` | ✅ `integration/` holds only `estate.test.js` + map, both matched |
+| Port 8791, `HOST=127.0.0.1`, `requireLoopback: true` | ✅ matches, and it is *checked* rather than asserted |
+| The `/ward-api` vs `/ward/*` trap | ✅ documented **and** machine-checked by the synthesizer |
+
+It also already carries the mail variables added in wave 5, and an
+`identityFor(consumer)` that registers the deploy dependency as a side effect of
+reading Ward's issuer — which is the mechanism briefs 13–15 are meant to use.
+
+**Written is not deployed.** Nothing says this has ever been run against the
+VPS, and the estate's real Caddy has never served Ward.
 
 ## The waves
 
