@@ -1,5 +1,5 @@
 ---
-summary: Dated snapshot — the design is complete, sixteen briefs are written in nine dependency waves, and waves 1–5 have landed. The API is complete and the client package exists; what is missing is every screen a person would look at. Nothing is decided that is not recorded.
+summary: Dated snapshot — waves 1–6 have landed and Ward is feature-complete as a service: API, client package and UI. What remains is deployment, wiring the six apps, and the destructive cutover — none of which has been started, and all of which leave this repo.
 updated: 2026-09-04
 ---
 
@@ -9,16 +9,16 @@ _2026-09-04._
 
 ## Where things stand
 
-**Waves 1–5 landed 2026-09-04.** Ward's API is complete: it authenticates
-people, answers introspection, administers the estate from a break-glass
-console, accepts public registration with email verification, and ships
-`@ward/client` so the six apps can consume all of it without writing auth six
-times. **530 tests**, 39 of them in the client and 9 driving the assembled
-service end to end.
+**Waves 1–6 landed 2026-09-04. Ward is feature-complete as a service.** API,
+`@ward/client`, and the UI: one central login page with the `?next=` handover,
+public registration and verification, minimal self-service, and the superuser
+console. **831 tests** across three workspaces.
 
-What is missing is **every screen a person would look at**, and the deploy. No
-app is wired to Ward yet either — the client package exists but nothing imports
-it.
+**What remains all leaves this repo.** Nothing is deployed — the shared
+Caddyfile that five live apps route through has no Ward entry. No app is wired
+to Ward: the client package exists and nothing imports it. And the cutover has
+not begun. Those are waves 7, 8 and 9, and each needs a decision that is not the
+build's to make.
 
 | Thread | State |
 |---|---|
@@ -31,9 +31,9 @@ it.
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **9** — 00 · 01 · 02 · 03 · 04 · 05 · 06 · [07](../briefs/done/07-registration-email.md) · [08](../briefs/done/08-client-package.md), all in [briefs/done/](../briefs/done/); 7 left in [briefs/todo/](../briefs/todo/) |
-| Service code | The API is complete — health, JWKS, login/refresh/logout, introspection, the console's apps/grants/accounts routes, and public registration with verification |
-| Tests | **530** — 39 in `@ward/client`, 9 driving the real `buildApp()` end to end |
+| Briefs done | **11** — 00 · 01 · 02 · 03 · 04 · 05 · 06 · 07 · 08 · [09](../briefs/done/09-login-ui.md) · [10](../briefs/done/10-console-ui.md), all in [briefs/done/](../briefs/done/); **5 left**, and every one of them touches another repo |
+| Service code | **Complete.** API, `@ward/client`, and the UI at `/ward` — login, register, verify, self-service, and the console |
+| Tests | **831** across three workspaces — 9 drive the real `buildApp()` end to end |
 | Deploy entry in `vps-deploy` | **None** |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
@@ -57,29 +57,21 @@ it.
 
 ## The next move
 
-**Build wave 6 — briefs 09 (login page and self-service) and 10 (the console).**
-Both are Vite + React in `ui/`, and the workspace, the design tokens and the one
-contract between them are already in place:
+**Wave 7 — brief 11, the deploy — and it is the first wave that leaves this
+repo.** It writes into `vps-deploy` and adds Ward to the **shared Caddyfile that
+five live apps route through**. A mistake there is an outage for apps that have
+nothing to do with Ward, so it wants a person watching, not an unattended run.
 
-- **Brief 09 owns the router**; **brief 10 exposes the whole console as a single
-  `<ConsoleRoutes />`** from `ui/src/pages/console/routes.tsx`. Neither edits a
-  file the other owns to add a screen.
-- **`ui/src/tokens.css` carries the names; brief 09 owns every value.** Brief 10
-  consumes names only, and the console re-points them under
-  `data-ward-surface="console"` — a **safety** property, not a style choice,
-  since brief 10 requires the console to look visibly unlike the login page.
+Then wave 8 (13 · 14 · 15) modifies atrium, newspapper and prm directly, and
+**brief 14 carries a design call the corpus says must not default** — see the
+warning below. Then wave 9, which destroys every account in the estate.
 
-Two traps that will cost an afternoon each if not read first:
-
-- **Cookie paths are browser-side.** `ward_refresh` is `Path=/ward-api/refresh`
-  and `ward_console` is `Path=/ward-api/console`, but Caddy's `handle_path`
-  strips the prefix, so the Fastify routes are `/refresh` and `/console/*`.
-  Getting this backwards yields a cookie that is never sent — "works in tests,
-  always 401s in production". Vite's dev proxy is configured to mirror the
-  production shape for exactly this reason.
-- **Apps are not seeded.** A fresh database has none, so every registration
-  answers `registration_closed` until the console creates one. Correct, and it
-  looks like a bug.
+**Before any of that, the honest gap:** nothing has ever been deployed or run
+against a real browser on the real origin. Every verification so far has been
+`app.inject`, a local socket, or a Vite dev server whose proxy *imitates* Caddy.
+The cookie paths (`/ward-api/refresh`, `/ward-api/console`) are the part most
+likely to be wrong in a way no local test can show, because `handle_path`
+strips a prefix that nothing local strips.
 
 ## The waves
 
@@ -93,7 +85,7 @@ started until the one before it is verified.
 | ~~3~~ | ~~03 · 06~~ | ~~Login and refresh rotation; the superuser~~ **DONE 2026-09-04** |
 | ~~4~~ | ~~04 · 05~~ | ~~Introspection; apps, grants and audit~~ **DONE 2026-09-04** |
 | ~~5~~ | ~~07 · 08~~ | ~~Public registration and email; `@ward/client`~~ **DONE 2026-09-04** |
-| 6 | 09 · 10 | Login and self-service UI; the console |
+| ~~6~~ | ~~09 · 10~~ | ~~Login and self-service UI; the console~~ **DONE 2026-09-04** |
 | 7 | 11 | Deploy — vps-deploy project and Caddy routes |
 | 8 | 13 · 14 · 15 | Atrium, newspapper and prm cut over |
 | 9 | 16 | **The cutover** — back up, recreate, then prune |
