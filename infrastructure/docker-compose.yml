@@ -1,0 +1,36 @@
+# Ward's compose file. The build context is the repo root (..) because the image
+# needs the root lockfile and every workspace manifest.
+#
+#   docker compose -f infrastructure/docker-compose.yml up -d ward-api
+#
+# `.env` in THIS directory is written by the deploy (vps-deploy's `server`
+# phase, 0600) and is read twice: compose interpolates ${...} below from it, and
+# the service declares it as env_file so the same values reach the process.
+# It is git-ignored — it carries the break-glass superuser password.
+services:
+  ward-api:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile
+      target: prod
+    image: ward-api:1.0
+    ports:
+      # LOOPBACK ONLY, and the prefix is load-bearing. "8791:8791" would publish
+      # on every interface, making the estate's identity service reachable over
+      # plain HTTP directly, past Caddy and its TLS. Ward's own HOST is 0.0.0.0
+      # because that is inside the container's network namespace; this line is
+      # what actually decides who can reach it.
+      - "127.0.0.1:${PORT:-8791}:${PORT:-8791}"
+    env_file:
+      - .env
+    volumes:
+      # The credential database, the signing key and the mail spool. Bind-mounted
+      # from the host so containerizing migrated no data and "back up Ward" still
+      # means one path. Defaults to a local dir so a dev `compose up` works.
+      - ${WARD_DATA_DIR:-../api/data}:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- \"http://127.0.0.1:${PORT:-8791}/health\""]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s

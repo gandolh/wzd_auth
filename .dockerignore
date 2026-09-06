@@ -1,0 +1,17 @@
+# Keep the build context small and hermetic. node_modules in particular must
+# never be copied in: the image runs `npm ci` itself, and a host tree built for
+# a different libc would poison the native modules.
+node_modules
+**/node_modules
+api/dist
+ui/dist
+.git
+corpus
+*.md
+.env
+.env.*
+!.env.example
+infrastructure/.env
+api/data
+api/mail-outbox
+**/*.map
