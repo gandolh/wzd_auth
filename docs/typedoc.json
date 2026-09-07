@@ -1,0 +1,13 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["../client/src/index.ts", "../client/src/fastify.ts"],
+  "tsconfig": "../client/tsconfig.json",
+  "out": "public/reference/client",
+  "name": "@ward/client",
+  "readme": "../client/README.md",
+  "hideGenerator": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "sort": ["source-order"],
+  "categorizeByGroup": true
+}

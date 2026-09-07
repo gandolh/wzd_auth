@@ -1,0 +1,86 @@
+---
+title: The one-origin estate
+description: Every project is a sub-path on one hostname. That single fact makes cross-app SSO nearly free and removes all isolation between apps — and it constrains every other decision here.
+---
+
+Every deployed project in the estate is a **sub-path on one origin**:
+`https://gandolh.ro/<name>`, served by a single Caddy instance from a generated
+`Caddyfile` in the `vps-deploy` repo. There are no subdomains. `www` and the
+bare IP both redirect to the apex, so there is exactly one canonical origin.
+
+This is the most load-bearing fact about Ward. It is not a preference — it is
+the estate as it already exists — and it rules several designs in and several
+out before anyone proposes them.
+
+## What it gives
+
+**A cookie set at `Path=/` is sent to every app automatically.** No redirect
+dance, no CORS preflight, no fragment parsing, no token relay. Cross-app SSO is
+nearly free: an app that receives a request already has the access token
+attached, whether or not it has ever heard of Ward's login page.
+
+It also fixes an existing wart. Atrium accepted `?token=` in the query string
+purely because `<img>` cover tags cannot send an `Authorization` header. Cookies
+ride on `<img>` requests for free, so that carve-out could be deleted rather
+than reproduced.
+
+## What it costs
+
+**There is no isolation between apps.** Same origin is one security context:
+any app's frontend JavaScript can call any other app's API with the user's
+credentials attached, and an XSS in the most trivial static site in the estate
+reaches atrium's API. Sub-paths do not sandbox.
+
+:::danger[This is accepted, not solved]
+Ward does not fix it and cannot. Moving apps to subdomains would restore
+isolation and would cost the free cookie, the absent CORS, and the single
+certificate — and would replace them with a redirect-based SSO flow that has to
+be got right. The estate chose the trade knowingly; see
+[decisions](/wiki/decisions/).
+:::
+
+## The literal-matching trap
+
+Caddy's path matching is literal, and `handle_path /ward/*` requires the
+character after `/ward` to be `/`. So:
+
+| Pair | Disjoint? | Why |
+|---|---|---|
+| `/ward` and `/ward-api` | **Yes** | The next character is `-`, not `/` |
+| `/ward` and `/ward/docs` | **No** | `/ward/*` matches every path under `/ward/docs` |
+
+Both shapes exist in the estate, which is why the second one is not left to
+care. A project's docs live at `/<project>/docs` by convention, nested inside
+the app's own prefix, and are reachable only because the docs route is written
+**above** the app route in the generated file. That ordering is pinned by the
+construct that emits it and checked by the synthesizer, which refuses to render
+a file where a route is shadowed. The rule and its enforcement are written up in
+`vps-deploy/docs/docs-route-convention.md`.
+
+The same trap is why the `/ward` ↔ `/ward-api` pair carries a comment in the
+stack: a rename that made them nest would break every app in the estate
+silently, and only the checker would catch it.
+
+## What it means for the cookies
+
+Two cookies, two very different scopes, both consequences of this topology.
+
+| Cookie | Path | Why that path |
+|---|---|---|
+| access token | `/` | It must reach every app. That is the whole mechanism. |
+| refresh token | `/ward-api/refresh` | It must reach **nothing** but the one endpoint that spends it. A refresh token at `Path=/` would be handed to five apps that have no business holding it. |
+| console session | `/ward-api/console` | The console is superuser-only; its credential should not travel with ordinary requests. |
+
+The narrow paths are doing real work. They are also the part of the system most
+likely to be wrong in a way local testing cannot reveal, because `handle_path`
+strips a prefix that no dev server strips — the caveat recorded in
+[Status](/wiki/status/).
+
+## The `?next=` allowlist
+
+One central login page means every app sends people to it with
+`?next=/wherever`. An unchecked `next` would be an open redirect on the estate's
+only sign-in surface — the single highest-value phishing target here — so it is
+**allowlisted against the known set of estate paths**, not merely checked for
+being relative. A value that does not match is dropped and the person lands on a
+default destination rather than being sent somewhere unexpected.

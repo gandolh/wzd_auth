@@ -1,0 +1,130 @@
+---
+title: Sessions and tokens
+description: A short signed access token plus an opaque rotating refresh row — what each one is for, how rotation detects a stolen cookie, and the one case that looks like theft but is not.
+---
+
+import Diagram from '../../components/Diagram.astro'
+
+A Ward session is **two credentials that answer different questions**.
+
+| | Access token | Refresh token |
+|---|---|---|
+| Form | EdDSA-signed JWT | 32 random bytes, opaque |
+| Stored by Ward | no | yes — `sha256(token)`, one row |
+| Lifetime | 15 minutes | 30 days, **absolute from login** |
+| Cookie path | `/` | `/ward-api/refresh` |
+| Answers | "is this signature genuine?" | "may this session continue?" |
+| Checked by | every app, locally | Ward alone |
+
+Keeping them apart is the whole design. Signature validity is cheap, local and
+offline; session liveness is a question only Ward can answer. Collapsing them
+into one credential means either a database hit on every request, or a token
+that cannot be revoked.
+
+## Signing in
+
+<Diagram
+  name="login-sequence"
+  title="Signing in, and the first request that follows"
+  caption="Note where the two dashed boundaries fall — the person is handed to Ward and back before the app ever sees a credential, and the app's own check happens on the request after"
+  height={860}
+/>
+
+The handover is a plain redirect because it can be: every app shares the origin,
+so the cookie Ward sets is already attached to the next request. There is no
+authorization code, no state parameter, and no token in a URL.
+
+`?next=` is [allowlisted](/topology/#the-next-allowlist). It is the one piece of
+this flow where getting it wrong would be an estate-wide problem.
+
+## Rotation, and the stolen-cookie alarm
+
+Every refresh spends one token and mints its successor **in the same family**.
+A family is the unit of revocation: the `sid` claim in the access token names
+it, so revoking a family invalidates the access tokens that belong to it and
+nothing else.
+
+<Diagram
+  name="session-lifecycle"
+  title="The refresh family — rotation, the race, and the alarm"
+  caption="The two red states are both lost claims. What separates them is whether the family's live tip is a fresh successor of the token just presented"
+  height={780}
+/>
+
+### Why the claim must stay one statement
+
+The single-use guarantee is the `WHERE used_at IS NULL` **inside** the `UPDATE`,
+not anything in the surrounding code:
+
+```sql
+UPDATE refresh_tokens
+   SET used_at = ...
+ WHERE token_hash = ? AND used_at IS NULL
+RETURNING *
+```
+
+Two concurrent presentations of the same token both run it, exactly one matches
+a row, and the loser gets nothing back and is reported as a replay. Split into a
+`SELECT` then an `UPDATE` and there is a window where both callers see an
+unspent token and both succeed — which is precisely the case reuse detection
+exists to catch. The decomposition does not merely look untidy; it disables the
+alarm.
+
+:::note[`better-sqlite3` being synchronous does not save a split statement]
+The two halves would be two separate synchronous calls, and `await`-free code
+still interleaves across requests at every I/O boundary between them.
+:::
+
+### Why the whole family dies
+
+The legitimate client and the thief both hold descendants of one root, and
+nothing anywhere distinguishes them — whoever presented the stale token might be
+the victim replaying after a lost response, or the thief using a copy. Revoking
+only the presented token leaves the other party holding a live one, which is the
+wrong half in exactly the case that matters.
+
+So the family dies, both parties re-authenticate, and only the one who knows the
+password gets back in. That is the entire value of the mechanism.
+
+### The case that is not theft
+
+"Nothing distinguishes them" turned out to be too strong. Two tabs of one app
+firing `/refresh` at the same instant present the **same** token; one wins the
+claim and one loses it. The loser used to burn the family down microseconds
+after the winner had already written the successor into the cookie jar.
+
+It was reproduced: two concurrent refreshes returning `200` and `401`, and zero
+live tokens left for the subject. The `200` had set cookies for a successor that
+was revoked immediately afterwards, so the client believed it held a fresh
+30-day credential and was dead on its next refresh.
+
+The alarm now asks one question before revoking anything: **is the family's live
+tip the direct successor of the token just presented, and was it issued within
+the grace window?** If so it is a race — the family is left alone and a
+`session.refresh_raced` row is written. If not — no live tip, or a tip from a
+later rotation, or one older than the grace window — it is a replay and the
+family dies.
+
+## The 30 days are absolute
+
+A family expires 30 days **from login**, not from the most recent rotation.
+
+A sliding window would make a family immortal for as long as anyone keeps
+rotating it — including a thief who rotates quietly and never triggers the
+alarm. The alarm only fires when the *victim* returns, and a victim who has
+stopped using the app never does. An absolute lifetime puts a hard ceiling on
+that.
+
+## Logout revokes; it does not delete
+
+`POST /logout` marks the family revoked. The rows stay. Deleting them would
+destroy the evidence that the session ever existed, which matters for the audit
+log, and would make a subsequent replay indistinguishable from an unknown token
+rather than from a revoked one.
+
+## Related decisions
+
+- [Sessions and tokens, in full](/wiki/decisions-tokens/) — the locked calls,
+  including why there is no JWT denylist and how the `sid` claim came to exist.
+- [Implementation calls](/wiki/decisions-implementation/) — scrypt over
+  argon2id, the driver, the lockout key.

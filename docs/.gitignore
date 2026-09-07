@@ -1,0 +1,15 @@
+# Astro's own cache and build output.
+.astro/
+dist/
+
+# GENERATED on every docs build — do not commit, do not edit.
+#   scripts/sync-corpus.mjs  renders corpus/ into here
+src/content/docs/wiki/
+#   typedoc renders @ward/client's public barrel into here
+public/reference/
+
+# NOTE: public/diagrams/ is deliberately NOT ignored. archify is an agent skill
+# installed per-machine, not an npm dependency, so the rendered artifacts are
+# committed and scripts/build-diagrams.mjs regenerates them only where the skill
+# is present. The JSON IR in diagrams/ is the source; the HTML is the build
+# product that has to survive a machine without archify.

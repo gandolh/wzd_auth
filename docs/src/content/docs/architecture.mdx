@@ -1,0 +1,116 @@
+---
+title: Architecture
+description: The three workspaces, the process and storage model, and the trust boundaries — what Ward is made of and where each responsibility stops.
+---
+
+import Diagram from '../../components/Diagram.astro'
+
+Ward is a three-workspace npm monorepo producing two deployed artifacts and one
+reference library.
+
+| Workspace | Ships as | What it is |
+|---|---|---|
+| `api/` | a container behind Caddy at `/ward-api` | Fastify + `better-sqlite3`. The whole service. |
+| `ui/` | static files at `/ward` | Vite + React. The login page, self-service, and the console. |
+| `client/` | **nothing** | `@ward/client` — the tested reference implementation of the integration contract. |
+| `docs/` | static files at `/ward/docs` | This site. |
+
+That `client/` ships to nothing is deliberate, and is the most counter-intuitive
+fact about the estate. See [below](#the-client-that-ships-to-nothing).
+
+## The process and storage model
+
+<dl class="ward-facts">
+  <dt>Process</dt>
+  <dd>One Fastify instance, bound to <code>127.0.0.1:8791</code> — by configuration, not by firewall rule</dd>
+  <dt>Database</dt>
+  <dd>One SQLite file in WAL mode, opened synchronously with <code>better-sqlite3</code></dd>
+  <dt>Migrations</dt>
+  <dd>Statically imported, and run to completion <em>before</em> the listener binds</dd>
+  <dt>Signing key</dt>
+  <dd>One Ed25519 private key on disk, read at boot; the service refuses to start without it</dd>
+  <dt>Mail</dt>
+  <dd>Pluggable transport — SMTP in production, a file drop for local work</dd>
+</dl>
+
+There is no cache, no queue, no second process, and no network hop inside the
+service. A request is a handful of prepared statements against a local file.
+
+That is a decision rather than an omission. The estate's entire load is six apps
+introspecting sessions for one household of users, and every piece of
+infrastructure that would make Ward "scalable" would also make it a thing that
+can be down — while being the one service whose being down signs everybody out
+of everything.
+
+<Diagram
+  name="architecture"
+  title="Ward in the estate"
+  caption="The two boundaries are the interesting part — the outer one is the shared VPS, the inner one is the loopback bind that makes Caddy the only way in"
+  height={820}
+/>
+
+## Where responsibility stops
+
+The line Ward draws is between **who someone is** and **what they have done**.
+
+Ward owns identity: credentials, the account, and the grants saying which apps a
+person may use. It hands every app a stable, opaque **subject**, and that is the
+entire interface. An app keys its own rows on the subject and owns them
+completely — atrium's reading progress, prm's favorites, newspapper's drafts.
+Ward has never heard of any of them.
+
+The practical consequence is worth stating: **Ward can be restored from backup
+without consulting any app, and any app can be restored without consulting
+Ward.** The only shared value is an opaque string that neither side derives from
+the other.
+
+## The four request shapes
+
+1. **A browser signing in.** `POST /login` → password check → session row → two
+   cookies. See [Sessions and tokens](/sessions/).
+2. **An app checking a caller.** `POST /introspect`, carrying that app's own
+   service key, answered from the database with no caching on Ward's side. See
+   [Introspection and revocation](/introspection/).
+3. **A browser doing self-service.** `GET /account`, password change, revoke
+   other sessions — authenticated by the access cookie.
+4. **The superuser in the console.** Everything under `/console/*`, gated by a
+   *separate* cookie scoped to `/ward-api/console` and a separate credential.
+   See [the admin decisions](/wiki/decisions-admin/).
+
+Anything else — `/health`, `/.well-known/jwks.json`, `GET /apps` — is a static
+answer with no session involved.
+
+## The client that ships to nothing
+
+`client/` is a complete, tested Ward client with 43 tests. **No app depends on
+it.** All five consuming apps hand-write their own against
+[the integration contract](/wiki/integrating/).
+
+The reason is mechanical: the apps are separate checkouts that `vps-deploy`
+rsyncs and `npm ci`s independently, and every way of sharing one package across
+them — a registry, a committed tarball, a git dependency — costs more in build
+machinery and deploy credentials than the ~200 lines it saves.
+
+The cost is real and was accepted with eyes open: **security code, written five
+times.** Two things contain it. [The integration contract](/wiki/integrating/)
+is what all five are written against, and `client/` stays as the reference
+implementation so "what should this do" has exactly one answer. A change to any
+of the five behaviours goes to the contract first, then to `client/`, then to
+all five apps.
+
+:::caution[The estate's largest standing risk]
+Five hand-written copies of security-critical code will drift. Nothing
+mechanical prevents it today — no shared suite runs against all five, and no CI
+checks an app's client against the contract. If one thing in this architecture
+deserves revisiting, it is this.
+:::
+
+## What is deliberately absent
+
+| Not present | Because |
+|---|---|
+| A JWT denylist | Introspection already answers "is this live?". A denylist would be a second, redundant revocation path — see [decisions-tokens](/wiki/decisions-tokens/). |
+| Knex, or any query builder | Raw `better-sqlite3` with prepared statements — see [decisions-implementation](/wiki/decisions-implementation/). |
+| argon2id | scrypt, from Node's standard library, so there is no native build in the deploy path. |
+| A shared npm package | See above. |
+| Subdomains, CORS, OIDC | One origin makes all three unnecessary — see [The one-origin estate](/topology/). |

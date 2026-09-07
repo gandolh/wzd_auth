@@ -1,0 +1,245 @@
+/*
+ * Ward's docs wear Ward's design language.
+ *
+ * The tokens below are lifted from `ui/src/tokens.css`, which states the intent
+ * these docs inherit: **"a door, not a lobby."** Near-monochrome limestone, one
+ * accent used sparingly, generous vertical rhythm, structure drawn with RULES
+ * rather than cards, and no webfont — the system stack is a deliberate call
+ * there and is kept here so the docs and the login page render in the same type.
+ *
+ * Two conscious departures from the app, both because a docs site is read
+ * rather than crossed:
+ *
+ *   • The accent appears more than once per screen. In the UI that rule protects
+ *     a single call to action; here the accent is doing navigational work
+ *     (active sidebar item, link, heading rule) and rationing it would make the
+ *     page harder to scan, not calmer.
+ *   • The console's dark palette is NOT adopted. `data-ward-surface="console"`
+ *     exists so that reaching for break-glass looks different from signing in —
+ *     a safety property, not a style. Borrowing it for documentation would spend
+ *     that signal on prose. It is quoted once, in the App keys page's console
+ *     screenshot framing, and nowhere else.
+ *
+ * Light-only: see src/components/ThemeProvider.astro.
+ */
+
+:root,
+:root[data-theme='light'],
+:root[data-theme='dark'] {
+  /* --- Ward's own tokens, verbatim ------------------------------------- */
+  --ward-bg: #f2f1ec;
+  --ward-surface: #fdfdfc;
+  --ward-surface-sunken: #e7e6e0;
+  --ward-border: #d6d4cc;
+  --ward-border-strong: #a9a69b;
+
+  --ward-text: #1a1c1a;
+  --ward-text-muted: #4d514b;
+  --ward-text-faint: #66695f;
+
+  --ward-accent: #35473c;
+  --ward-accent-hover: #24312a;
+  --ward-accent-text: #f4f5f1;
+
+  --ward-danger: #8a2e21;
+  --ward-danger-surface: #f9eae7;
+  --ward-notice: #5e4c0e;
+  --ward-notice-surface: #faf2d8;
+
+  --ward-font:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ward-font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --ward-radius: 6px;
+  --ward-radius-lg: 10px;
+  --ward-shadow: 0 1px 2px rgb(26 28 26 / 6%), 0 1px 1px rgb(26 28 26 / 4%);
+  --ward-focus: 0 0 0 3px rgb(53 71 60 / 30%);
+
+  /* --- Starlight's palette, re-pointed at them -------------------------- */
+  /* Starlight expects a 6-step accent ramp and a 6-step grey ramp. The accent
+     is one lichen green pushed light and dark from #35473c; the greys are the
+     limestone surfaces, so a Starlight component that reaches for --sl-color-gray-6
+     lands on the same paper the login page uses. */
+  --sl-color-accent-low: #dfe4e0;
+  --sl-color-accent: #35473c;
+  --sl-color-accent-high: #24312a;
+
+  --sl-color-white: #ffffff;
+  --sl-color-black: #1a1c1a;
+  --sl-color-gray-1: #2c2f2c;
+  --sl-color-gray-2: #4d514b;
+  --sl-color-gray-3: #66695f;
+  --sl-color-gray-4: #a9a69b;
+  --sl-color-gray-5: #d6d4cc;
+  --sl-color-gray-6: #e7e6e0;
+  --sl-color-gray-7: #f2f1ec;
+
+  --sl-color-text: var(--ward-text);
+  --sl-color-text-accent: var(--ward-accent);
+  --sl-color-text-invert: var(--ward-accent-text);
+  --sl-color-bg: var(--ward-bg);
+  --sl-color-bg-nav: var(--ward-bg);
+  --sl-color-bg-sidebar: var(--ward-bg);
+  --sl-color-bg-inline-code: var(--ward-surface-sunken);
+  --sl-color-bg-accent: var(--ward-accent);
+  --sl-color-hairline: var(--ward-border);
+  --sl-color-hairline-light: var(--ward-border);
+  --sl-color-hairline-shade: var(--ward-border);
+
+  --sl-font: var(--ward-font);
+  --sl-font-mono: var(--ward-font-mono);
+
+  /* Starlight's asides, mapped onto Ward's two state colours. `danger` in
+     Ward's system is for destructive confirmations, not for ordinary errors,
+     and that distinction is preserved: `caution` gets the notice ochre. */
+  --sl-color-green: var(--ward-accent);
+  --sl-color-green-low: var(--ward-surface-sunken);
+  --sl-color-green-high: var(--ward-accent-hover);
+  --sl-color-orange: var(--ward-notice);
+  --sl-color-orange-low: var(--ward-notice-surface);
+  --sl-color-orange-high: #3f3409;
+  --sl-color-red: var(--ward-danger);
+  --sl-color-red-low: var(--ward-danger-surface);
+  --sl-color-red-high: #5e1f16;
+  --sl-color-blue: var(--ward-text-muted);
+  --sl-color-blue-low: var(--ward-surface-sunken);
+  --sl-color-blue-high: var(--ward-text);
+  --sl-color-purple: var(--ward-accent);
+  --sl-color-purple-low: var(--ward-surface-sunken);
+  --sl-color-purple-high: var(--ward-accent-hover);
+}
+
+/* The site title, set in the same type as everything else — Ward has no
+   wordmark and inventing one for the docs would be inventing a brand the
+   service deliberately does not have. */
+.site-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* --- Structure is drawn with rules --------------------------------------- */
+/* The app's tokens.css calls this "the jamb": a threshold has an edge you
+   cross, and a rounded panel floating in the viewport is a lobby. Headings get
+   a rule above rather than a card around. */
+.sl-markdown-content h2 {
+  padding-top: 1.5rem;
+  border-top: 2px solid var(--ward-border-strong);
+  letter-spacing: -0.015em;
+}
+
+.sl-markdown-content h3 {
+  letter-spacing: -0.01em;
+}
+
+/* Tables: ruled, not boxed. Ward's HTTP surface and data model are both mostly
+   tables, so this is the single highest-traffic piece of styling on the site. */
+.sl-markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.sl-markdown-content th {
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid var(--ward-border-strong);
+  padding: 0.5rem 0.75rem 0.5rem 0;
+}
+
+.sl-markdown-content td {
+  border-bottom: 1px solid var(--ward-border);
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  vertical-align: top;
+}
+
+.sl-markdown-content tr:last-child td {
+  border-bottom: none;
+}
+
+/* Code: the sunken limestone, so a fenced block reads as recessed into the page
+   rather than as a floating card. */
+.sl-markdown-content :not(pre) > code {
+  border: 1px solid var(--ward-border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+}
+
+.expressive-code .frame pre,
+.sl-markdown-content pre {
+  border: 1px solid var(--ward-border);
+  border-radius: var(--ward-radius);
+}
+
+/* --- Diagram frames ------------------------------------------------------ */
+/* An archify artifact is a self-contained interactive HTML document, so it is
+   embedded in an iframe (see src/components/Diagram.astro). The frame is ruled
+   like everything else and carries its caption below the rule, not floating. */
+.doc-diagram {
+  margin: 1.75rem 0;
+}
+
+.doc-diagram__frame {
+  width: 100%;
+  border: 1px solid var(--ward-border);
+  border-radius: var(--ward-radius);
+  background: var(--ward-surface);
+  display: block;
+}
+
+.doc-diagram__caption {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--ward-border);
+  font-size: 0.8125rem;
+  color: var(--ward-text-faint);
+  line-height: 1.5;
+}
+
+.doc-diagram__caption a {
+  color: var(--ward-text-muted);
+}
+
+/* --- Key/value facts ----------------------------------------------------- */
+/* Used at the top of the reference pages. A definition list rather than a card
+   grid, for the same reason the rest of the page is ruled. */
+.ward-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 1.5rem 0;
+  padding: 1rem 0;
+  border-top: 2px solid var(--ward-border-strong);
+  border-bottom: 1px solid var(--ward-border);
+  font-size: 0.9375rem;
+}
+
+.ward-facts dt {
+  color: var(--ward-text-faint);
+  font-weight: 500;
+}
+
+.ward-facts dd {
+  margin: 0;
+  color: var(--ward-text);
+}
+
+.ward-facts dd code {
+  font-size: 0.9em;
+}
+
+/* Never remove a focus ring; inherited verbatim from the app's tokens.css,
+   which calls itself a keyboard-first form surface. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ward-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

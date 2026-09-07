@@ -1,0 +1,105 @@
+---
+title: App keys
+description: The per-app service key every /introspect call carries — why the endpoint stopped being anonymous, and why a rejected key is a 401 rather than a dead session.
+---
+
+Every `POST /introspect` call carries an `x-ward-app-key` header holding a
+service key issued to that app from the console. Without one, the call is
+refused before Ward does any work.
+
+This is the newest locked decision, taken **after** the build had started, and
+it revised an earlier one.
+
+## What it revised
+
+The original call was "no client authentication on `/introspect`", and it rested
+on a premise: the endpoint was not reachable from the internet.
+
+The premise was wrong. `vps-deploy` serves the whole API with
+`handle_path /ward-api/*` on the public origin, so `/ward-api/introspect` was
+answering anybody. Two decisions leaned on the belief that it was not.
+
+The key is what makes those decisions true rather than hoped for. An anonymous
+caller is now refused before Ward verifies a signature or reads a row on their
+behalf, and every call that does happen names the app that made it.
+
+:::note[The general lesson, recorded in the corpus]
+The premise was checkable and was not checked. It is the second time in this
+project that a security argument turned out to rest on a deployment fact nobody
+had verified — see [decisions-app-keys](/wiki/decisions-app-keys/).
+:::
+
+## Why not `Authorization: Bearer`
+
+`/introspect` already carries a bearer credential in its body — the access token
+being introspected. Three credentials in one request is confusing enough without
+two of them sharing a header name.
+
+Worse, a `Bearer` scheme invites exactly the mistake this endpoint most needs to
+avoid: an app putting the **user's** token where the **app's** key goes, and
+getting back an answer that looks plausible. A distinct header makes that
+mix-up a missing-header error rather than a subtle one.
+
+## One key per app, not one shared key
+
+Each consuming app holds its own key, in its own `secrets/<app>.env` in the
+deploy repo. The whole value of a key over an anonymous endpoint is that:
+
+- a leak is contained to one app, and
+- revoking is one click in the console rather than a coordinated redeploy of
+  five.
+
+A shared key would give up both.
+
+## What the key authenticates — and what it does not
+
+A key says **which app is asking**. It does not scope what that app may see.
+
+Any valid key gets the full introspection answer, including grants for *other*
+apps. That is deliberate: the response shape is one object and every consumer
+already receives the whole `grants` map. Scoping it per key would be a second
+authorization model inside the identity service, and the estate has exactly one
+tenant — the value would be theoretical while the complexity would be real.
+
+It is written down as a known limit rather than pretended away. If the estate
+ever gains a consumer that is not fully trusted, this is the first thing that
+has to change.
+
+## Storage and rotation
+
+<dl class="ward-facts">
+  <dt>Generated</dt>
+  <dd>256 bits from <code>randomBytes</code>, shown once at creation and never again</dd>
+  <dt>Stored</dt>
+  <dd><code>sha256</code> of the key — Ward cannot show you a key it already issued</dd>
+  <dt>Revoked</dt>
+  <dd>marked on the row; the key stops working immediately, with no cache to wait out</dd>
+  <dt>Rotation</dt>
+  <dd>issue a second key, deploy it, revoke the first — overlap is supported by design</dd>
+</dl>
+
+Because keys are per app and multiple live keys are allowed, rotation needs no
+downtime and no coordination. That is the property that makes revoking a leaked
+key an easy decision rather than an outage.
+
+## Failure is one answer
+
+Absent, malformed, unknown, and revoked all produce the same `401` with
+`{"error":"invalid_app_key"}`. A caller cannot use the endpoint to discover
+whether a key they hold was revoked or never existed; the distinction is in the
+server log, for an operator.
+
+For why that `401` is not `{"active":false}` — the one place this endpoint
+distinguishes a failure — see
+[Introspection](/introspection/#the-one-exception-and-why-it-exists).
+
+## What it forced elsewhere
+
+Ward's own UI could no longer call `/introspect`: a first-party browser app
+cannot hold a service key without shipping it to every visitor. It moved to
+`GET /ward-api/session`, authenticated by the access cookie.
+
+The alternative — exempting cookie-bearing requests from the key requirement —
+was considered and rejected, because it protects nothing. An attacker picks
+their own headers, so "no key needed if a cookie is present" reduces to "no key
+needed".

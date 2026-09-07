@@ -1,0 +1,81 @@
+---
+title: Ward
+description: One identity, one credential store and one set of access grants for every side project on the shared VPS.
+tableOfContents: false
+---
+
+import Diagram from '../../components/Diagram.astro'
+
+Ward is the estate's identity service. It replaces six separately-designed auth
+stacks with **one identity, one credential store, and one set of access
+grants** — a Fastify + SQLite service at `/ward-api`, and the one login page in
+the estate at `/ward`.
+
+<dl class="ward-facts">
+  <dt>Runs at</dt>
+  <dd><code>https://gandolh.ro/ward</code> (UI) and <code>/ward-api</code> (API), one origin, no subdomains</dd>
+  <dt>Owns</dt>
+  <dd>Credentials, account identity, and <code>(subject, app, roles)</code> grants</dd>
+  <dt>Does not own</dt>
+  <dd>Anything an app stores about a person — apps keep their own rows, keyed on an opaque <strong>subject</strong></dd>
+  <dt>Consumed by</dt>
+  <dd>atrium · public-resource-map · newspapper · imbatranimOS · sports-app</dd>
+  <dt>Signs with</dt>
+  <dd>One Ed25519 key, held by Ward alone; apps get the public half over JWKS</dd>
+</dl>
+
+## The shape in a paragraph
+
+A person lands on an app, gets bounced to `/ward/login?next=…`, and signs in
+once. Ward writes a session and sets two cookies: a **15-minute EdDSA access
+token** at `Path=/`, and a **30-day opaque refresh row** scoped to
+`/ward-api/refresh`. Because every project is a sub-path on one origin, that
+access cookie is already attached to the next request the person makes to any
+app — no redirect dance, no CORS, no token relay. The app verifies the
+signature locally, then asks Ward whether the session is still live and what it
+may do, and caches that answer for 30 seconds.
+
+<Diagram
+  name="architecture"
+  title="Ward in the estate — components, boundaries, and the calls between them"
+  caption="Follow the emphasised path: browser → Caddy → Ward API → SQLite. The inner boundary is the loopback bind — Ward is not reachable except through Caddy"
+  height={820}
+/>
+
+## Where to go next
+
+| If you want to | Read |
+|---|---|
+| Understand the whole system | [Architecture](/architecture/) |
+| Know why sub-paths shape every decision | [The one-origin estate](/topology/) |
+| Follow a sign-in end to end | [Sessions and tokens](/sessions/) |
+| Know how revocation actually takes effect | [Introspection and revocation](/introspection/) |
+| Understand who may do what | [Grants](/grants/) |
+| **Wire a new app up to Ward** | [The integration contract](/wiki/integrating/) |
+| Look up an endpoint | [HTTP API](/api/) |
+| Look up a table | [Data model](/data/) |
+
+## What this site is made of
+
+Three sources, kept apart on purpose, because they go stale in different ways.
+
+- **Authored** — the pages above. Written by hand against the code, and the
+  place where architecture, the HTTP surface and the schema are described. The
+  corpus has long recorded that it had no `architecture.md`, `api.md` or
+  `data.md`; these are those pages.
+- **Rendered from the corpus** — everything under *Deep dive* and *Status*. Those
+  are generated on every build from `corpus/`, which is the project's own
+  decision record. They carry a banner saying so. Edit the corpus, not the copy.
+- **Generated from the code** — [`@ward/client`](/reference/client/) is TypeDoc
+  over the package's public barrel, so it cannot drift from what the module
+  actually exports. The diagrams are compiled by
+  [archify](https://github.com/tt-a1i/archify) from typed JSON in `docs/diagrams/`
+  and validated before they ship.
+
+:::note[One honest caveat, carried over from the corpus]
+At the time of writing, **nothing here has ever run against a deployed Ward**.
+Every verification is `app.inject`, a local socket, or a dev server that
+*imitates* Caddy. The cookie paths are the part most likely to be wrong in a
+way no local test can show, because `handle_path` strips a prefix that nothing
+local strips. See [Status](/wiki/status/).
+:::

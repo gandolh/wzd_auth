@@ -1,40 +1,53 @@
 ---
-summary: Dated snapshot — waves 1–6 have landed and Ward is feature-complete as a service: API, client package and UI. What remains is deployment, wiring the six apps, and the destructive cutover — none of which has been started, and all of which leave this repo.
-updated: 2026-09-04
+summary: Dated snapshot — Ward is feature-complete, app keys landed, and all five apps are cut over and green in their own repos. What remains is the deploy (newspapper has no stack, and the shared Caddyfile has no Ward entry) and the destructive prune; nothing has ever run against a real browser or a deployed Ward.
+updated: 2026-09-06
 ---
 
 # Status
 
-_2026-09-04._
+_2026-09-06._
 
 ## Where things stand
 
 **Waves 1–6 landed 2026-09-04. Ward is feature-complete as a service.** API,
 `@ward/client`, and the UI: one central login page with the `?next=` handover,
 public registration and verification, minimal self-service, and the superuser
-console. **831 tests** across three workspaces.
+console. **895 tests** across three workspaces.
 
-**What remains all leaves this repo.** Nothing is deployed — the shared
-Caddyfile that five live apps route through has no Ward entry. No app is wired
-to Ward: the client package exists and nothing imports it. And the cutover has
-not begun. Those are waves 7, 8 and 9, and each needs a decision that is not the
-build's to make.
+**App keys landed 2026-09-06**, outside the wave plan. `POST /introspect` is no
+longer anonymous — every call carries an `x-ward-app-key` issued per app from
+the console — and Ward's own UI moved to a cookie-authenticated `GET /session`.
+This revised a locked decision: "no client authentication" rested on the
+endpoint being unreachable from the internet, and the deployed Caddy
+configuration says otherwise. See
+[decisions-app-keys.md](./decisions-app-keys.md).
+
+**Wave 8 landed 2026-09-06: all five apps are cut over.** atrium, prm,
+newspapper, imbatranimOS and sports-app each hand-write a Ward client against
+[integrating.md](./integrating.md), hold their own app key, guard on a grant,
+and have deleted their own credentials outright. Every suite is green in every
+repo.
+
+**What remains is the deploy and the prune.** Nothing has ever run against a
+real browser or a deployed Ward — the shared Caddyfile still has no Ward entry —
+and no destructive migration has been executed. Those are waves 7 and 9.
 
 | Thread | State |
 |---|---|
 | Estate survey | **Done** — [estate.md](./estate.md) |
 | Candidate research | **Done** — [landscape.md](./landscape.md) |
 | Design grilling (6 rounds) | **Complete** 2026-09-01 |
-| Decisions locked | **20** design, across four `decisions*.md` pages, plus five engineering calls in [decisions-implementation.md](./decisions-implementation.md) |
+| Decisions locked | **21** design, across five `decisions*.md` pages — [app keys](./decisions-app-keys.md) is the newest, and the only one taken after the build started — plus five engineering calls in [decisions-implementation.md](./decisions-implementation.md) |
 | Open questions | **None** |
 | Cutover | **Full prune** — every account and all its app data, then recreate |
 | UI | **Central `/ward/login` + console + minimal self-service** |
 | Name | **Ward** (repo still `wzd_auth`; rename pending) |
 | Briefs written | **16** |
-| Briefs done | **11** — 00 · 01 · 02 · 03 · 04 · 05 · 06 · 07 · 08 · [09](../briefs/done/09-login-ui.md) · [10](../briefs/done/10-console-ui.md), all in [briefs/done/](../briefs/done/); **5 left**, and every one of them touches another repo |
+| Briefs done | **14** — 00–10 in [briefs/done/](../briefs/done/), plus 13 · 14 · 15 executed 2026-09-06 along with two unbriefed apps. **2 left**: 11 (deploy) and 16 (the prune) |
+| App keys | **Built 2026-09-06**, unbriefed — schema, guard, console routes and panel. Consumed by all five apps; not yet deployed |
 | Service code | **Complete.** API, `@ward/client`, and the UI at `/ward` — login, register, verify, self-service, and the console |
-| Tests | **831** across three workspaces — 9 drive the real `buildApp()` end to end |
-| Deploy entry in `vps-deploy` | **Written, never run.** `stacks/ward.ts` exists and is thorough — see [the note below](#brief-11-is-already-written-in-vps-deploy) |
+| Tests | **895** across three workspaces — 9 drive the real `buildApp()` end to end, now through the keyed `/introspect` |
+| Deploy entry in `vps-deploy` | **Written, never run.** Ward plus four wired consumers; **newspapper has no stack** — see [the note below](#brief-11-is-already-written-in-vps-deploy) |
 | Repo directory rename | **Deferred by the owner** — still `wzd_auth` on disk; `package.json` says `ward` |
 
 ## What is actually known
@@ -44,61 +57,61 @@ build's to make.
 - **Six apps** have or will have identity: atrium and newspapper (the two named
   in the request), plus public-resource-map, imbatranimOS, sports-app and
   eventually trips. Designing for two under-counts.
-- Atrium and newspapper **disagree on every row** of the auth model —
-  account count, session revocability, transport, hashing, lockout, sub-identity.
-  A shared service picks one shape per row; the contested rows are session
-  revocability and whether profiles generalize.
-- Newspapper is **going to the VPS**, which retires the loopback premise its
-  security decisions were written against and leaves three of its calls live on
-  the public internet.
-- The no-public-signup decision **collides with public-resource-map**, which
-  ships self-registration. That conflict is Q8 and is the only place Round 1
-  created a problem rather than closing one.
+- Atrium and newspapper **disagreed on every row** of the auth model. Settled by
+  the cutover: Ward's shape won each one, and each app's revision notes record
+  what it gave up.
+- Newspapper's **loopback premise is retired**. Its `/uploads/*` exposure was
+  closed by intercepting the request rather than authorising it — see that
+  repo's `decisions-security.md`.
+- prm's public signup **collided with the no-public-signup decision** (Q8). That
+  is what moved the estate's boundary from registration to authorization, and
+  prm remains the only app with the flag on.
+
+## Each app hand-writes its Ward client
+
+**Decided 2026-09-06: there is no shared package in any app's dependencies.**
+The apps are separate checkouts that `vps-deploy` rsyncs and `npm ci`s
+independently, and every mechanism for sharing one package across them — a
+registry, a committed tarball, a git dependency — costs more in build machinery
+and deploy credentials than the ~200 lines it saves.
+
+The cost is real and accepted with eyes open: **security code, written five
+times**. [integrating.md](./integrating.md) is the mitigation — the contract all
+five are written against — and `client/` stays as the tested reference
+implementation (43 tests, shipped to nothing) so "what should this do" has one
+answer. A change to any of the five behaviours goes there first, then to
+`client/`, then to all five apps.
 
 ## The next move
 
-**Wave 7 — brief 11, the deploy — and it is the first wave that leaves this
-repo.** It writes into `vps-deploy` and adds Ward to the **shared Caddyfile that
-five live apps route through**. A mistake there is an outage for apps that have
-nothing to do with Ward, so it wants a person watching, not an unattended run.
+**Wave 7 — the deploy.** `vps-deploy` now wires four of the five apps to Ward
+(`ward.identityFor(app)`, which creates the deploy edge as a side effect of
+reading the identity) and each holds a `WARD_APP_KEY` secret in its own
+`secrets/<app>.env`. **newspapper has no stack there at all** and needs one,
+plus a block in the shared Caddyfile that five live apps route through — a
+mistake there is an outage for apps with nothing to do with Ward, so it wants a
+person watching.
 
-Then wave 8 (13 · 14 · 15) modifies atrium, newspapper and prm directly, and
-**brief 14 carries a design call the corpus says must not default** — see the
-warning below. Then wave 9, which destroys every account in the estate.
+Then wave 9, which destroys every account in the estate.
 
-**Before any of that, the honest gap:** nothing has ever been deployed or run
-against a real browser on the real origin. Every verification so far has been
-`app.inject`, a local socket, or a Vite dev server whose proxy *imitates* Caddy.
-The cookie paths (`/ward-api/refresh`, `/ward-api/console`) are the part most
-likely to be wrong in a way no local test can show, because `handle_path`
-strips a prefix that nothing local strips.
+**The honest gap, unchanged:** nothing has ever been deployed or run against a
+real browser on the real origin. Every verification is `app.inject`, a local
+socket, or a dev server whose proxy *imitates* Caddy. The cookie paths
+(`/ward-api/refresh`, `/ward-api/console`) are the part most likely to be wrong
+in a way no local test can show, because `handle_path` strips a prefix that
+nothing local strips.
 
 ## Brief 11 is already written in vps-deploy
 
-**Checked 2026-09-04. Brief 11's work exists, in a shape the brief does not
-describe.** The brief says `vps-deploy/projects/<name>/deploy.ts`; that layout
-is gone — vps-deploy was reorganized into a CDK-style construct tree, and Ward
-is `stacks/ward.ts`, constructed **first** in `app.ts` with the comment "five
-apps will eventually authenticate against it".
+**Checked 2026-09-04, extended 2026-09-06.** Ward is `stacks/ward.ts`,
+constructed first in `app.ts`; six of the brief's assumptions were verified
+against what waves 1–6 built (the table is in [log.md](../log.md) under
+2026-09-04). `identityFor(consumer)` now also hands the consumer a required
+`WARD_APP_KEY` secret declared against that app's own stack, and four apps call
+`useWard(ward.identityFor(app))` — so the deploy edge exists because the
+identity was read, which is what the construct tree was refactored for.
 
-It is more thorough than the brief asked for, and its assumptions were verified
-against what waves 1–6 actually built:
-
-| Assumption | Verified |
-|---|---|
-| `keygen` takes an explicit path and needs no Ward environment | ✅ runs under `env -i`, writes `0600`, refuses to overwrite |
-| `verifyAssetBase` — `index.html` must reference `/ward/assets/` | ✅ it does |
-| `pendingBuild` skips the UI until briefs 09/10 land | ✅ gates on `hasBuildScript`, which now exists — **the comment is stale, the logic self-heals** |
-| Test files excluded from `api/dist` | ✅ `integration/` holds only `estate.test.js` + map, both matched |
-| Port 8791, `HOST=127.0.0.1`, `requireLoopback: true` | ✅ matches, and it is *checked* rather than asserted |
-| The `/ward-api` vs `/ward/*` trap | ✅ documented **and** machine-checked by the synthesizer |
-
-It also already carries the mail variables added in wave 5, and an
-`identityFor(consumer)` that registers the deploy dependency as a side effect of
-reading Ward's issuer — which is the mechanism briefs 13–15 are meant to use.
-
-**Written is not deployed.** Nothing says this has ever been run against the
-VPS, and the estate's real Caddy has never served Ward.
+**Written is not deployed**, and **newspapper still has no stack at all**.
 
 ## The waves
 
@@ -107,15 +120,15 @@ started until the one before it is verified.
 
 | Wave | Briefs | What lands |
 |---|---|---|
-| ~~1~~ | ~~00~~ | ~~Scaffold, rename, env contract~~ **DONE 2026-09-02** |
-| ~~2~~ | ~~01 · 02~~ | ~~Schema; signing keys and JWKS~~ **DONE 2026-09-02** |
-| ~~3~~ | ~~03 · 06~~ | ~~Login and refresh rotation; the superuser~~ **DONE 2026-09-04** |
-| ~~4~~ | ~~04 · 05~~ | ~~Introspection; apps, grants and audit~~ **DONE 2026-09-04** |
-| ~~5~~ | ~~07 · 08~~ | ~~Public registration and email; `@ward/client`~~ **DONE 2026-09-04** |
-| ~~6~~ | ~~09 · 10~~ | ~~Login and self-service UI; the console~~ **DONE 2026-09-04** |
-| 7 | 11 | Deploy — vps-deploy project and Caddy routes |
-| 8 | 13 · 14 · 15 | Atrium, newspapper and prm cut over |
+| ~~1–6~~ | ~~00–10~~ | ~~The service: schema, keys, login, introspection, grants, registration, client, UI, console~~ **DONE 2026-09-02 → 09-04** |
+| ~~8~~ | ~~13 · 14 · 15 + 2 unbriefed~~ | ~~All five apps cut over~~ **DONE 2026-09-06** — ran ahead of wave 7 |
+| 7 | 11 | Deploy — newspapper's stack, and Caddy routes |
 | 9 | 16 | **The cutover** — back up, recreate, then prune |
+
+Wave 8 ran before wave 7, inverting the plan. That is safe in the direction it
+went — the app changes are all local and reversible, and none of them can be
+*verified* until the deploy happens — but it means five apps are now written
+against a service that has never answered a real request.
 
 **Wave 9 is destructive and runs last on purpose.** By the time the prune fires,
 the new world has to be proven working — sign-in verified across all six apps.
@@ -164,22 +177,18 @@ also the single largest source of remaining work.
 
 ## Known gaps in this corpus
 
-- No `architecture.md`, `api.md` or `data.md`. Still correct: there is one
-  route and no schema. Each should appear with the code that justifies it —
-  `data.md` with brief 01, `api.md` once there is an API worth describing.
-  Configuration is currently documented in `.env.example` itself, which names
-  every variable and its reader; that is the right home while it fits on one
-  page.
+- ~~No `architecture.md`, `api.md` or `data.md`.~~ **Closed 2026-09-06** — not in
+  the corpus but in `docs/`, a Starlight site at `/ward/docs`. Architecture, the
+  HTTP surface, the data model, configuration and app keys are authored there
+  against the code; this corpus is *rendered* into the same site rather than
+  duplicated, and `.env.example` stays the canonical variable list.
 - The research in [landscape.md](./landscape.md) is a survey of published
   comparisons, not hands-on evaluation. Nothing has been installed or measured.
   It documents a road not taken and should not be re-opened casually.
-- **Seven briefs of sixteen are built**, and the API is feature-complete for a
-  machine caller. Nothing a person can look at exists yet.
-- **The integration gap is closed but narrow.** Nine tests now drive the real
-  `buildApp()` against a real database and a real key, which is what found the
-  two behaviours noted below. But they cover the happy paths and the revocation
-  cases — not the mail flow, not a browser, and nothing under concurrency beyond
-  the one refresh race.
+- **The integration gap is closed but narrow.** Nine tests drive the real
+  `buildApp()` against a real database and a real key — happy paths and
+  revocation, not the mail flow, not a browser, nothing concurrent beyond the
+  one refresh race.
 - **Two behaviours only the integration suite could see**, both recorded in
   code where they surfaced: the 10-second refresh race carve-out swallows a
   replay that fires too soon, and `session.refresh_denied` is effectively

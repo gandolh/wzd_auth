@@ -1,0 +1,55 @@
+---
+/**
+ * Embed an archify artifact.
+ *
+ * archify delivers a COMPLETE HTML document — its own <head>, styles, and the
+ * viewer runtime that provides pan/zoom, search, relationship tracing and the
+ * guided views. It is not a fragment, so it goes in an iframe rather than being
+ * inlined: inlining would mean two documents' styles and two viewer runtimes
+ * fighting over one page.
+ *
+ * The frame is deliberately given a fixed height rather than being auto-sized.
+ * The viewer adapts its own reading width to the viewport it is handed, and a
+ * height negotiated by script would fight that; a stated height also means the
+ * page does not reflow when the diagram finishes loading.
+ *
+ * `src` resolves against Astro's BASE_URL, so these keep working under the
+ * `/<project>/docs/` sub-path deploy as well as at the root during a local
+ * `astro preview`.
+ *
+ * Styling hooks (`.doc-diagram*`) are defined per project in src/styles/theme.css,
+ * so each site's diagrams are framed in that project's own visual language.
+ */
+interface Props {
+  /** File stem under public/diagrams/, e.g. "architecture". */
+  name: string
+  /** Accessible title for the frame. */
+  title: string
+  /** Prose below the frame. Say what to look at, not what it is. */
+  caption?: string
+  /** Frame height in px. Taller for the diagrams carrying three cards. */
+  height?: number
+}
+
+const { name, title, caption, height = 760 } = Astro.props
+const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+const src = `${base}/diagrams/${name}.html`
+---
+
+<figure class="doc-diagram">
+  <iframe
+    class="doc-diagram__frame"
+    src={src}
+    title={title}
+    height={height}
+    loading="lazy"
+  ></iframe>
+  {
+    caption && (
+      <figcaption class="doc-diagram__caption">
+        {caption} — <a href={src} target="_blank" rel="noopener">open full screen</a>, where
+        search, tracing and the guided views are usable.
+      </figcaption>
+    )
+  }
+</figure>

@@ -1,0 +1,126 @@
+---
+title: Introspection and revocation
+description: The endpoint every app calls on every request — what it answers, why it refuses to say why a session is dead, and why the 30-second cache is the revocation mechanism rather than a performance tweak.
+---
+
+`POST /ward-api/introspect` is the endpoint every app calls on every request,
+and it is the reason revocation works at all.
+
+An app splits one question into two. **Who is this?** is answered locally by
+verifying the access token's signature — no network call, no shared secret,
+just the public key from JWKS. **May they still do this?** is answered by Ward,
+because only Ward knows whether the session has been revoked since it was
+issued.
+
+## The exchange
+
+```http
+POST /ward-api/introspect
+x-ward-app-key: <this app's own service key>
+content-type: application/json
+
+{ "token": "<the access token>" }
+```
+
+```json
+{
+  "active": true,
+  "subject": "…opaque…",
+  "username": "…",
+  "grants": { "atrium": ["reader"], "prm": ["admin"] }
+}
+```
+
+An app absent from `grants` means **no access to that app at all**. Roles are an
+opaque set: test membership, never equality, and never interpret what a role
+string means — that meaning belongs to the app that defined it.
+
+## There is exactly one negative answer
+
+```json
+{ "active": false }
+```
+
+Expired, revoked, disabled account, deleted account, unknown token, and a
+console token presented to an app endpoint all produce that identical shape.
+Ward never says which, and a client must not try to guess.
+
+The reason is that they are all the same fact to a caller — *the session is not
+usable* — and any finer answer becomes an oracle. "Revoked" versus "unknown"
+tells an attacker whether a token they hold was ever real.
+
+### The one exception, and why it exists
+
+A **bad app key is a `401`, not `{"active":false}`**.
+
+That is the only place the endpoint distinguishes a failure, and it is not an
+inconsistency — it is the point. A rejected app key does not mean a session is
+dead; it means the app is *misconfigured*. Answering `{"active":false}` to a
+misconfigured app would sign every one of that app's users out simultaneously,
+silently, with a clean server log and nothing anywhere indicating a fault.
+
+So that failure is loud, distinguishable, and `@ward/client` turns it into a
+`WardConfigurationError` naming the cause. The body carries
+`{"error":"invalid_app_key"}` and nothing more — absent, malformed, unknown and
+revoked are one answer, so the endpoint cannot be used to probe whether a key
+was revoked or never existed. That distinction lives on the log line, for an
+operator.
+
+## The 30-second cache is the mechanism
+
+Every app caches the introspection answer for **30 seconds**. This is not a
+performance tweak; it is the revocation design.
+
+Revoking a session is **one write against one row**. Every app stops honouring
+it within its own cache window. The alternative — six denylists to distribute
+and keep synchronised — is what
+[decisions-tokens](/wiki/decisions-tokens/) rejected, and it fails in the worst
+possible direction: a denylist that has not propagated is a revocation that
+silently did not happen.
+
+The cost is stated plainly rather than hidden: **a revoked session may keep
+working for up to 30 seconds in an app that recently checked it.** Combined with
+the 15-minute access token, that is the estate's logout delay, and it is a
+deliberate number rather than an accident.
+
+:::note[Ward does not cache]
+The 30 seconds live in the *caller*. Ward answers every call from the database,
+and the response carries `no-store` — a per-session answer must never be held by
+a shared cache between Ward and the app.
+:::
+
+## Order of operations, and why it is not tidiness
+
+The app-key check runs **before** token verification. It is a shape test, one
+`sha256`, and one indexed read, and it is ordered first deliberately: the
+endpoint is published on the public origin, so an unauthenticated caller is
+refused before Ward does any Ed25519 work or resolves any grants on their
+behalf.
+
+That ordering is the whole denial-of-service argument for app keys. Reversing it
+for readability would give it away.
+
+## There is no rate limit here
+
+Deliberately. A lockout on this surface takes the estate down rather than
+degrading an attacker, because **every app reads a `429` as "not live"** — so a
+limiter that trips signs everybody out of everything.
+
+The brute-force question it raises is answered by arithmetic rather than by
+counting: an app key is 256 bits from `randomBytes`, so guessing is not a threat
+a counter would help with. What changed when keys arrived is that the surface is
+no longer anonymous, so a per-key limit *could* now be applied without
+estate-wide blast radius. Nothing counts anything today.
+
+## Ward's own UI does not use this endpoint
+
+It uses `GET /ward-api/session`, authenticated by the access cookie.
+
+When `/introspect` stopped being anonymous, a browser caller became impossible —
+a first-party UI cannot hold a service key without shipping it to every visitor.
+The alternative considered and rejected was exempting cookie-bearing requests
+from the key requirement, which protects nothing: an attacker picks their own
+headers, so "no key needed if a cookie is present" is "no key needed".
+
+See [App keys](/app-keys/) and
+[decisions-app-keys](/wiki/decisions-app-keys/).

@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Ward in the estate",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "sign-in",
+        "label": "The sign-in path",
+        "focus": [
+          "browser",
+          "caddy",
+          "ward_ui",
+          "ward_api",
+          "ward_db"
+        ],
+        "note": "A person reaches the one central login page and Ward writes a session."
+      },
+      {
+        "id": "app-verification",
+        "label": "How an app checks a caller",
+        "focus": [
+          "apps",
+          "ward_api",
+          "signing_key"
+        ],
+        "note": "Verify the signature locally against JWKS, then ask Ward whether the session is still live."
+      },
+      {
+        "id": "blast-radius",
+        "label": "What one origin costs",
+        "focus": [
+          "caddy",
+          "ward_ui",
+          "apps"
+        ],
+        "note": "Same origin is one security context: sub-paths do not sandbox the apps from each other."
+      }
+    ],
+    "viewBox": [
+      1060,
+      780
+    ]
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "one origin, cookies at Path=/",
+      "pos": [
+        30,
+        370
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "caddy",
+      "type": "cloud",
+      "label": "Caddy",
+      "sublabel": "gandolh.ro :443",
+      "tag": "handle_path strips the prefix",
+      "pos": [
+        220,
+        370
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "ward_ui",
+      "type": "frontend",
+      "label": "Ward UI",
+      "sublabel": "/ward — Vite + React",
+      "tag": "login · verify · console",
+      "pos": [
+        460,
+        160
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "apps",
+      "type": "backend",
+      "label": "Five consuming apps",
+      "sublabel": "atrium · prm · newspapper · imbatranimOS · sports-app",
+      "tag": "each hand-writes its Ward client",
+      "pos": [
+        440,
+        600
+      ],
+      "size": [
+        230,
+        60
+      ]
+    },
+    {
+      "id": "ward_api",
+      "type": "backend",
+      "label": "Ward API",
+      "sublabel": "/ward-api — Fastify, 127.0.0.1:8791",
+      "pos": [
+        460,
+        370
+      ],
+      "size": [
+        190,
+        60
+      ]
+    },
+    {
+      "id": "ward_db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "better-sqlite3, WAL",
+      "tag": "accounts · grants · refresh rows",
+      "pos": [
+        820,
+        370
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "signing_key",
+      "type": "security",
+      "label": "Ed25519 signing key",
+      "sublabel": "held by Ward alone",
+      "pos": [
+        820,
+        160
+      ],
+      "size": [
+        170,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Hetzner VPS — one origin, no subdomains",
+      "wraps": [
+        "caddy",
+        "ward_ui",
+        "apps",
+        "ward_api",
+        "ward_db",
+        "signing_key"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "loopback only — Caddy is the sole way in",
+      "wraps": [
+        "ward_api",
+        "ward_db",
+        "signing_key"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-caddy",
+      "from": "browser",
+      "to": "caddy",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "caddy-ui",
+      "from": "caddy",
+      "to": "ward_ui",
+      "label": "/ward — static SPA",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "caddy-apps",
+      "from": "caddy",
+      "to": "apps",
+      "label": "/atrium, /prm, …",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "caddy-api",
+      "from": "caddy",
+      "to": "ward_api",
+      "label": "/ward-api",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ui-session",
+      "from": "ward_ui",
+      "to": "ward_api",
+      "label": "GET /session (cookie)",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "apps-introspect",
+      "from": "apps",
+      "to": "ward_api",
+      "label": "POST /introspect + x-ward-app-key",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "apps-jwks",
+      "from": "apps",
+      "to": "ward_api",
+      "label": "GET jwks.json",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "api-db",
+      "from": "ward_api",
+      "to": "ward_db",
+      "label": "synchronous reads and writes",
+      "labelDy": 46
+    },
+    {
+      "id": "api-key",
+      "from": "ward_api",
+      "to": "signing_key",
+      "label": "EdDSA sign",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "The topology is the constraint",
+      "items": [
+        "Every project is a sub-path on one origin — there are no subdomains",
+        "A Path=/ cookie therefore reaches every app with no redirect dance",
+        "Same origin is one security context: sub-paths do not sandbox"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "What a session is",
+      "items": [
+        "15-minute EdDSA access token, verified locally by each app",
+        "30-day opaque refresh row, rotated on every use",
+        "Revoking is one write; apps notice within their 30-second cache"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "What Ward owns",
+      "items": [
+        "Credentials, account identity, and (subject, app, roles) grants",
+        "The one Ed25519 private key — apps only ever see the public half",
+        "Apps keep their own rows, keyed on an opaque subject"
+      ]
+    }
+  ]
+}

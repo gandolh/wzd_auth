@@ -1,0 +1,161 @@
+---
+title: Data model
+description: Seven tables, all STRICT, with the invariants pushed into CHECK constraints — what each one holds and which rules are enforced by SQLite rather than by code.
+---
+
+One SQLite file, WAL mode, seven tables. Every table is `STRICT`, so a column
+typed `TEXT` cannot quietly accept an integer.
+
+The consistent theme below is that **invariants live in the schema**. A `CHECK`
+constraint holds against a migration, a console action, a test fixture and a
+hand-edit in `sqlite3` alike, which is not true of a validation in a route
+handler.
+
+## `users`
+
+| Column | Notes |
+|---|---|
+| `subject` | **PK.** The opaque identifier every app keys its own rows on. Never derived from anything. |
+| `username` | As typed, for display. |
+| `username_folded` | **UNIQUE.** What login looks up. Folding is what stops `Gandolh` and `gandolh` being two accounts. |
+| `password_hash` | scrypt, per-password salt. |
+| `email` | Nullable — an account need not have one. |
+| `email_verified` | `0`/`1`. |
+| `disabled_at` | Set rather than deleted, so a disabled account keeps its audit trail. |
+
+```sql
+CHECK (email_verified = 0 OR email IS NOT NULL)
+```
+
+An unverified address is fine; a **verified NULL** is a bug that would let a
+password-reset flow trust an address that was never collected.
+
+The `UNIQUE` on `username_folded` already provides login's index. The separate
+partial index on `email` serves the console's "who has an unverified address"
+and registration's "is this address already spoken for".
+
+## `apps`
+
+| Column | Notes |
+|---|---|
+| `slug` | **PK**, lower case, enforced. |
+| `name` | Display name. |
+| `public_registration` | `0`/`1`. Only `prm` has it on. |
+| `baseline_role` | What a public registrant becomes. |
+
+```sql
+CHECK (slug <> '' AND slug = lower(slug))
+CHECK (public_registration = 0 OR baseline_role IS NOT NULL)
+```
+
+The first stops `Atrium` and `atrium` becoming two apps that look like one —
+slugs appear in grant rows, in URLs, and in six apps' configuration. The second
+makes it impossible to open signup without saying what a new registrant
+receives, which would otherwise be an open door onto an undefined authority.
+
+## `grants`
+
+```sql
+PRIMARY KEY (subject, app_slug, role)
+```
+
+The security boundary, described in full on [Grants](/grants/). Both foreign
+keys cascade on delete.
+
+The composite primary key's leading column is `subject`, so introspection's hot
+lookup — "every role this person holds" — is already served. The extra index on
+`(app_slug, role)` serves the other direction, which is the console's: everyone
+who can reach a given app.
+
+## `refresh_tokens`
+
+One row per issued token. This is where rotation and reuse detection live.
+
+| Column | Notes |
+|---|---|
+| `token_hash` | **PK.** `sha256` of the token. The plaintext is handed out once and never stored. |
+| `family_id` | The unit of revocation. The access token's `sid` claim names it. |
+| `used_at` | `NULL` until spent. **This is the single-use guarantee.** |
+| `revoked_at` / `revoked_reason` | One of `rotated`, `logout`, `reuse_detected`, `admin`, `expired`. |
+
+```sql
+CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
+```
+
+A reason without a revocation is a writer that set one and forgot the other, and
+the pair is what the console renders.
+
+The `expires_at` index exists because a 30-day token nobody ever presents again
+is otherwise immortal — expired rows are swept on a schedule rather than left to
+accumulate.
+
+See [Sessions and tokens](/sessions/) for why the claim on `used_at` must stay a
+single statement.
+
+## `app_keys`
+
+| Column | Notes |
+|---|---|
+| `id` | **PK**, and the identifier — the label is not. |
+| `app_slug` | Cascades from `apps`. |
+| `label` | What an operator reads to tell two keys apart: "atrium production", "atrium laptop". Not a secret. |
+| `key_hash` | **UNIQUE.** `sha256` of the key, never the key. |
+| `last_used_at` | Coarse — stamped at most hourly, never per request. |
+| `revoked_at` | Kept rather than deleted, so the audit trail still has a row to point at. |
+
+`last_used_at` being coarse is deliberate: this is the hot path, and a write on
+every introspection would turn a read-only request into a write for the sake of
+a timestamp nobody reads to the minute.
+
+## `verification_tokens`
+
+| Column | Notes |
+|---|---|
+| `purpose` | `email_verify` or `password_reset`. |
+| `email` | The address the token was sent to — recorded, not looked up later. |
+| `token_hash` | **UNIQUE.** |
+| `consumed_at` | Single-use, same shape as refresh tokens. |
+
+## `audit_log`
+
+| Column | Notes |
+|---|---|
+| `actor_kind` | `superuser`, `account`, or `system`. |
+| `actor_subject` | Only ever set for `account`. |
+| `target_kind` | `user`, `app`, `grant`, `session`, `token`, or `NULL`. |
+
+```sql
+CHECK ((actor_subject IS NOT NULL) = (actor_kind = 'account'))
+CHECK ((target_id IS NULL) = (target_kind IS NULL))
+```
+
+The first is the schema refusing to let a `superuser` or `system` row claim a
+subject. Only an account has one, and a row claiming otherwise would assert that
+an account exists for an identity that has none — exactly the confusion
+[decisions-admin](/wiki/decisions-admin/) exists to prevent.
+
+The default console view is newest-first, indexed on `(at DESC, id DESC)`. The
+`id DESC` gives the same order as `at DESC` **without depending on clock
+monotonicity** — worth copying anywhere else this pattern appears.
+
+## Backups
+
+:::danger[Never treat a `ward.db` copy as a backup]
+The database runs in WAL mode, which means committed data lives in the `-wal`
+sidecar until a checkpoint. Copying `ward.db` alone can produce a file that is
+missing recent commits while looking perfectly valid.
+
+Back up all three files together — `ward.db`, `ward.db-wal`, `ward.db-shm` — or
+checkpoint first. Ward checkpoints on clean shutdown for exactly this reason;
+see [decisions-implementation](/wiki/decisions-implementation/).
+:::
+
+## Migrations
+
+Statically imported from `api/src/db/migrations/index.ts` and run to completion
+**before** the listener binds. Two exist: the baseline, and the one that added
+`app_keys`.
+
+Static imports rather than a directory scan means the set of migrations is
+fixed at build time — a file that failed to copy into the container is a
+compile error, not a database that silently skips a step.

@@ -1,0 +1,22 @@
+{
+  "name": "@ward/docs-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ward documentation site — narrative rendered from corpus/, reference generated from the TypeScript, diagrams compiled by archify.",
+  "scripts": {
+    "sync-corpus": "node scripts/sync-corpus.mjs",
+    "diagrams": "node scripts/build-diagrams.mjs",
+    "ref": "typedoc",
+    "predev": "npm run sync-corpus && npm run diagrams",
+    "dev": "astro dev",
+    "docs": "npm run sync-corpus && npm run diagrams && npm run ref && astro build",
+    "preview": "astro preview"
+  },
+  "devDependencies": {
+    "@astrojs/starlight": "^0.41.3",
+    "astro": "^7.1.1",
+    "sharp": "^0.35.4",
+    "typedoc": "^0.28.20"
+  }
+}

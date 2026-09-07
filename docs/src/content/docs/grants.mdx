@@ -1,0 +1,119 @@
+---
+title: Grants — the security boundary
+description: Anyone may hold a Ward account; a (subject, app, role) grant is what lets them reach anything. The single largest change the design went through.
+---
+
+A grant is a row:
+
+```
+(subject, app_slug, role)
+```
+
+"This person may use this app in this capacity." It is the estate's **actual
+security boundary**, and arriving at that was the biggest change the design went
+through.
+
+## Registration used to be the boundary
+
+The original decision was operator-seeded accounts and no public signup:
+existing meant permitted.
+
+Then `public-resource-map` turned out to already have public self-registration,
+roles, and email verification — a live contradiction with a deployed app on the
+other side of it. Resolving it moved the boundary: **anyone may register; a
+grant is what confers access.**
+
+That revised two earlier decisions and pulled public signup, with its abuse and
+recovery costs, into scope. It is the right shape and it is also the single
+largest source of remaining work. See
+[decisions-accounts](/wiki/decisions-accounts/).
+
+## What registering gets you
+
+Almost nothing. An account, a subject, and whatever `baseline_role` the app you
+registered at chooses to grant — which may be nothing at all.
+
+Public registration is **per app**, a flag on the `apps` row, and the schema
+enforces the pairing:
+
+```sql
+CHECK (public_registration = 0 OR baseline_role IS NOT NULL)
+```
+
+An app cannot open signup without saying what a new registrant becomes. Leaving
+that unstated is the mistake this constraint exists to prevent — an open door
+onto an undefined authority.
+
+Today `prm` is the only app with the flag on.
+
+## Roles are opaque to Ward
+
+Ward stores role strings and never interprets them. `reader`, `admin`,
+`contributor` mean whatever the app that defined them says they mean.
+
+This is a real boundary, not a convenience. Ward answering "is this person an
+admin?" would put every app's authorization model inside the identity service,
+and the six apps here do not agree on one. Ward answers "which roles does this
+person hold for your app?" and the app decides what follows.
+
+For consumers this has a concrete rule: **test membership, never equality.**
+
+```ts
+// Right
+if (hasGrant(session.grants, 'atrium', 'admin')) { … }
+
+// Wrong — breaks the moment anyone holds two roles
+if (session.grants.atrium?.[0] === 'admin') { … }
+```
+
+## Slugs are pinned to lower case
+
+```sql
+CHECK (slug <> '' AND slug = lower(slug))
+```
+
+Slugs appear in grant rows, in URLs, and in six apps' configuration. Pinning the
+case in the schema stops `Atrium` and `atrium` becoming two apps that look like
+one — a class of bug that is invisible in the console and total in effect.
+
+## Cascade, and what it means for the cutover
+
+```sql
+subject  REFERENCES users (subject) ON DELETE CASCADE
+app_slug REFERENCES apps  (slug)    ON DELETE CASCADE
+```
+
+Deleting an account takes its grants with it. Deleting an app takes every grant
+into it.
+
+That is correct, and it is also why the cutover is destructive by decision: the
+migration to Ward prunes every account in the estate and recreates them, taking
+atrium's profiles and reading progress, its notes and LaTeX projects, and prm's
+favorites and notifications with them. The owner was shown the cascade and chose
+a clean slate. See [Status](/wiki/status/) — that brief has not run.
+
+## Two privileged identities, not interchangeable
+
+| | Superuser | Owner account |
+|---|---|---|
+| Where it lives | environment variables only | an ordinary row, like anyone else |
+| Can reach | Ward's admin console, and nothing else | the apps, via explicit admin grants |
+| Rotation | requires a redeploy | a password change |
+| Purpose | break glass | daily administration |
+
+The superuser has no row, no subject and no grants, so it cannot be granted
+access to an app even by mistake. There is deliberately **no way to delegate
+console access** — the console is the one credential that cannot be revoked
+without a redeploy, and handing it out would multiply that.
+
+Full reasoning in [decisions-admin](/wiki/decisions-admin/), which also explains
+why "admin" unqualified is a word to avoid here.
+
+## The console
+
+`/ward/console` — superuser only, and visibly not the ordinary login page.
+
+That is a safety property rather than a style choice: every route on it changes
+authority, and someone reaching for break-glass should be able to tell they
+have. The UI re-points its design tokens to a dark palette on a wrapper so the
+whole surface reads as a different building.

@@ -33,3 +33,239 @@ Append-only. Format: `## [YYYY-MM-DD] action | summary`
 ## [2026-09-04] build | Wave 5 landed — briefs 07 (public registration and email verification) and 08 (`@ward/client`). Ward's API is now complete and the six apps have something to consume it with. 530 tests, up from 450. **Brief 07 resolved the collision-enumeration tension by noticing the oracle cannot be closed**: the username *is* the canonical identifier, so a duplicate must be refused and the refusal carries the fact. Being vague costs every real person the one thing they need to know — in the single most likely response the endpoint gives — while costing a prober nothing, since they learn the same bit from the failure either way. So `409 username_taken` is stated plainly and what is withheld is everything *else*: byte-identical whether the holder is disabled, verified, owner-issued or already granted in that app; **byte-identical for `WARD_ADMIN_USERNAME`**, which is also refused, so blocking it cannot be used to discover the break-glass name; and no timing tell, since the password is hashed before the insert on every path that reaches it. **The enumeration that actually matters is not offered at all: there is no "email already registered" error** — `users.email` has no uniqueness constraint, two accounts may share an address, and `/register` never confirms or denies that an address is known to the estate. prm answers `EMAIL_TAKEN` today because email is its primary key; Ward's is not, so giving that oracle up costs nothing. Also: `registration_closed` covers a closed app and a nonexistent app identically, so the endpoint is not also an app-discovery oracle. **Keeping the verification token out of the request log needed a real finding, not a note**: the link has to be clickable from a mail client so the token travels in a URL, and Fastify writes its `incoming request` line **before any `onRequest` hook could scrub it** — so `/verify` is registered in its own encapsulated scope whose `req` serializer replaces the **whole query string** with `<redacted>`, not just `token`, so a parameter added later cannot leak by omission. Verified as zero occurrences of a real token in a complete server log. `granted_by` carries `"self-registration"`, moved to `db/grants.ts` beside `SUPERUSER_ACTOR` so the sentinels that column may hold stay together; both alternatives were wrong, since the superuser constant would make the audit trail claim the break-glass credential acted when nobody did, and the registrant's own subject would read as "this person granted themselves", implying an authority they do not hold. Registration has its own lockout budget and shares nothing, so a flood cannot stop people who already have accounts from signing in. Password reset stays deliberately unbuilt. **Brief 08's client fails closed in all three ways it could have failed open** — a 500 from Ward throws rather than reading as `active: false`, an unreachable Ward throws rather than allowing, and an expired cache entry is not served when Ward is down — with a test for each, because Ward being unavailable already means nobody can log in and must not *also* mean revocation quietly stops working. Fifty concurrent requests on one cold token collapse to exactly one introspection call, counted rather than asserted in principle. It also documented the distinction that this package invites getting wrong: **`jose`'s JWKS cache answers "did Ward sign this"** (~10 minutes, refetching on an unknown `kid` outside a ~30-second cooldown that is the anti-stampede floor), while **the package's own 30-second cache answers "is this session live, what may it do"** and alone bounds how long a revocation takes to land — so raising the first does not slow revocation and lowering the second does not speed up rotation pickup. `apiBasePath` has no default on purpose: the old `""` resolved to the origin root while Caddy serves Ward under `/ward-api`, and had the package shipped that way every app would have fetched a 404 and all six would have rejected every token at once. **Controller groundwork this wave, in files every brief is told not to touch:** the mail contract in `config.ts` as an explicit required `WARD_MAIL_TRANSPORT` of `smtp` or `file` — deliberately not inferred from `NODE_ENV`, because sniffing the environment and falling back to writing files is the silent-default shape that file exists to refuse, and an estate whose mail stopped leaving the building because a variable was unset is a registration flow that appears to work and delivers nothing; a `"register"` member on the closed `LockoutSurface` union; and the `ui/` Vite + React workspace with `tokens.css`, whose console surface re-points the same token names because brief 10 requires the console to look visibly unlike the login page on **safety** grounds rather than stylistic ones. One process note worth recording against myself: I ran a verify-then-commit as a single command and committed a tree whose `typecheck` and `build` were red — a type error in my own new test file that `vitest` does not catch, which is precisely what the typecheck gate is for. Amended. Collapsing the gate and the commit into one step defeats the gate.
 
 ## [2026-09-04] build | Wave 6 landed — briefs 09 (login page and self-service) and 10 (the console). **Ward is feature-complete as a service**: 831 tests across three workspaces. Both UI briefs did the thing that made this wave worth more than the screens themselves — they **reported endpoints that did not exist rather than faking screens against them**, nine in total, which were then built as one coherent change instead of being discovered one at a time during a cutover. The two that carried the most weight: **`POST /account/sessions/revoke-others`**, which decisions.md uses to justify the entire self-service page existing (owner-issued accounts have no verified email and therefore no recovery channel, so it is the only self-serve response to a suspected theft — without it, as brief 09 put it, that page is a grants viewer with a sign-out button), and **`GET /console/audit`**, without which the audit trail decisions-admin.md requires for the one credential that cannot be revoked or rotated was unreadable in practice. Brief 10 also found the **design gap behind that route rather than just the route**: every console mutation writes `actor_kind='superuser'` with `actor_subject=NULL`, and the only actor filter `AuditQuery` offered was on subject — so "filterable by actor" was unsatisfiable for the actor that matters most. `actorKind` and `actorLabel` were added. **Three holes in my own verification, all found by the agents rather than by the gates meant to find them.** `vitest.config.ts` included `api/**` and `client/**` only, so no `ui/` test would ever have run — both UI briefs wrote tests against a runner that could not see them, and brief 09 caught it and fixed it, which is the only reason brief 10's 83 tests execute at all. The `lint` and `fmt:check` scripts globbed `api/src/**` alone, so **every "lint PASS" reported through this entire build was blind to `ui/` and `client/`**; nothing had rotted, but only because both agents ran eslint over their own files by hand. And `eslint.config.js` carried no React rules in a repo that now has a React frontend — turning them on surfaced **nine errors immediately**, in exactly the two categories newspapper's config records as load-bearing (a ref written during render, `setState` called synchronously in an effect). Newspapper's note that the rule is **not exhaustive** proved true here too: a third instance of the same ref pattern sat unflagged beside two that were caught, and the agent fixing them noticed and fixed it anyway. All nine were fixed with **no `eslint-disable`** — the countdown moved to `useSyncExternalStore`, `Verify` derives its empty-token answer at render rather than in an effect, and the console's loadable uses React's documented reset-on-dependency-change pattern, which also removed a real flash of stale content the old effect caused by painting the previous result once before flipping to loading. **A gate that covers less than it appears to is worse than no gate, because it is trusted** — the scripts now cover all three workspaces. Both briefs also found bugs only a browser shows, which is the argument for the "boot it and look at it" verification step: three CSS bugs in the console (`flex: 1 1 12rem` read as a 12rem *height*), and in self-service, focus staying on the button after a blank submit — telling a keyboard user from three elements away that something invisible was wrong — plus a blank Register submit that round-tripped three empty strings to the API and spent lockout budget to be told about spacing rules. The `?next=` allowlist got 73 table-driven cases, and two of its rules are worth not losing: **raw and decoded forms are both validated because they can disagree** (`/atrium/%2e%2e/%2e%2e/evil` keeps `atrium` as its first segment while its decoded form resolves to `/evil`), and **the estate's own origin spelled absolutely is refused as firmly as `evil.example`**, because accepting one absolute host is how a later edit accepts two. `ESTATE_APPS` stays hard-coded even though display names now come from `GET /apps`: it is also the allowlist, and an allowlist fetched over the network is not an allowlist. One piece of copy was flagged in advance as easy to get subtly wrong and worth checking: a password change revokes the caller's **own** family too, so `sessionsRevoked` reads `1` for a person with one device, and rendering that as "1 other device signed out" would tell somebody they had been compromised when nothing happened but their own credential rotating. The count is never shown raw. Finally, the verification mail linked to `/ward-api/verify` — the API's own server-rendered page — so brief 09's `/ward/verify` screen was **not on the path anyone takes from their inbox**; brief 09 found it in a file it did not own and reported it rather than reaching in.
+
+## [2026-09-06] build | app keys: `/introspect` stopped being anonymous, and Ward's own UI moved off it
+
+`POST /introspect` now requires an `x-ward-app-key` header, checked before
+anything else happens. The trigger was a **false premise** in
+`routes/introspect.ts`, which stated the route "is not reachable from the
+internet in the deployed topology" and rested two decisions on it — no client
+authentication and no rate limit. `vps-deploy/stacks/ward.ts` serves the whole
+API under `handle_path /ward-api/*` on the public origin, so the endpoint was
+in fact reachable by anyone, and as built it performed an Ed25519 verification
+plus three indexed reads for every anonymous caller that asked, with nothing
+counting the asks and no way to say afterwards who had asked. Both decisions
+have been re-derived rather than merely patched, and
+[wiki/decisions-app-keys.md](wiki/decisions-app-keys.md) is the new page;
+[decisions-tokens.md](wiki/decisions-tokens.md) carries a revision note where
+the "loopback call" claim was.
+
+**The shape.** A new `app_keys` table (migration `20260906000000`): `wak_` +
+256 bits of `randomBytes`, stored only as `sha256` — the same primitive and the
+same argument as `refresh_tokens.token_hash`, because the input has no
+dictionary to attack and passwords are the opposite case. `id` is a separate
+non-secret handle so the console and the audit log have something to point at.
+Issued and revoked from the console (`/console/apps/:slug/keys`,
+`/console/app-keys/:id/revoke`) with a panel on the app's page; the plaintext
+appears in exactly one response and in no other, and there is no route that
+reads it back. `@ward/client` grows a **required** `appKey` option — required
+so that omitting it is a compile error rather than a `401` discovered in
+production, since a missing key is a total outage for that app and not a
+degraded mode.
+
+**Three calls worth keeping.** *A rejected key is a `401`, not
+`{"active":false}`* — the single carve-out from this endpoint's one-answer rule,
+because answering "not active" to a misconfigured app signs every one of its
+users out simultaneously, silently, with a clean server log; `@ward/client`
+raises `WardConfigurationError`, a **subclass** of `WardUnavailableError` so
+every app's existing fail-closed handling catches it unchanged while the message
+names `WARD_APP_KEY`. *The key authenticates but does not scope* — a keyed call
+still gets the whole estate's grant map, which was the owner's call; scoping is
+a separate decision and the test that must change first says so. *No rate limit
+still*, unchanged and for the unchanged reason, but the option now exists per
+key rather than estate-wide.
+
+**Ward's own UI moved to `GET /session`.** It read `/introspect` with the
+session cookie, and a key in a Vite bundle is a published string. The tempting
+alternative — require a key only when there is no cookie — is **worthless**, and
+is written down in both the route and the decision page so it is not
+re-proposed: an attacker chooses their own headers, so moving a token from a
+body into a `Cookie:` header is a one-line change to a `curl` command, and a
+cookie-shaped exemption exempts everybody. `/session` is safe unkeyed for a
+narrower reason — the token comes from the cookie and from nowhere else, so it
+grants nothing that setting the cookie did not already grant — and there are
+tests that a token offered in a query string or an `Authorization` header is
+ignored there. The response shape is byte-identical and reuses the same
+serialisation schema, so `ui/src/lib/session.ts` changed only its URL.
+
+**One write on the hot path, and it is throttled.** `app_keys.last_used_at` is
+stamped **at most once an hour per key**, guarded in process, because rotating a
+key across five independently deployed apps is unsafe without knowing whether
+the old one is still in use — and because a write per request would turn the
+credential table into an amplifier fed by ordinary traffic, which is the same
+thing this endpoint already refuses to do to `audit_log`. It is best-effort:
+a failed stamp must never turn an authenticated request into a refused one, so
+it is the one swallowed `catch` in `auth/app-key.ts`.
+
+**A pre-existing test flake was found and fixed on the way through.**
+`introspect.test.ts`'s "signature has been tampered with" case rewrote the last
+two base64url characters of an Ed25519 signature. The final character of an
+86-character encoding carries only 2 significant bits — the other 4 are ignored
+on decode — so `"AA"` and `"AB"` decode to byte-identical signatures, and
+roughly 1 run in 256 the "tampered" token was the untampered one and verified
+perfectly. It now flips a character in the middle, where all 6 bits count.
+
+**Deploy plumbing, not yet used.** `WardStack.identityFor(consumer)` now also
+returns a `WARD_APP_KEY` secret declared against the **consumer's** stack, so
+each app looks its key up in its own `secrets/<app>.env` and a preflight names
+the right file. No stack consumes `identityFor` yet. `npm run synth` is clean —
+18 stacks, 23 routes, no collisions.
+
+**895 tests** across three workspaces (up from 831), lint and typecheck clean,
+the UI builds. **Nothing is deployed**, and no app is wired: the five app
+integrations are blocked on how a separate repo obtains `@ward/client`, which
+brief 08 left as "published or linked as a normal npm dependency" and which is
+not a question this change could answer by guessing.
+
+## [2026-09-06] change | wave 8: all five apps cut over to Ward, each hand-writing its own client
+
+**The estate now has one identity.** atrium, public-resource-map, newspapper,
+imbatranimOS and sports-app have each deleted their own credentials, adopted
+Ward's session, and re-keyed their per-person rows onto Ward's subject. Every
+suite is green in every repo: 895 here, 647 atrium, 54 prm, 595 newspapper,
+403 + 116 + 272 imbatranimOS, 1114 sports-app.
+
+**Each app hand-writes its Ward client**, by decision. The apps are separate
+checkouts that `vps-deploy` rsyncs and `npm ci`s independently, so no build
+resolves a workspace package from another repo, and every mechanism that would
+make one resolve — a registry, a committed tarball, a git dependency — costs
+more in build machinery and deploy credentials than the ~200 lines it saves.
+The cost is real and named: **security code, written five times.**
+[wiki/integrating.md](wiki/integrating.md) is the mitigation — the contract all
+five are written against, listing the five things that must be right — and
+`client/` stays as the tested reference implementation, shipped to nothing.
+
+**The shape is the same everywhere and the binding is not.** All five verify
+locally with the algorithm **pinned as a literal**, introspect with a 30-second
+per-token cache, send `x-ward-app-key`, and fail closed with three codes: 401 no
+session, **403 a live session holding no grant for this app**, 503 Ward
+unreachable. The 403 is the one that needed saying five times: prm's
+registration is open to the public, so a live Ward session held by a complete
+stranger is an ordinary thing for every one of these apps to receive, and
+authenticating without checking the grant would have handed that stranger a
+library, a terminal, or somebody's training history.
+
+**What each app actually had to decide.**
+
+*atrium* — the active profile lived on `sessions.active_profile_id`, and there
+is no sessions table. It moved to `profile_selections (subject, sid)`, keyed on
+the token's refresh-family claim, which reproduces per-device switching exactly;
+a per-account column would have silently switched the phone when you switched
+the laptop. "Every account has a profile" stopped being sweepable — atrium
+cannot enumerate Ward's accounts — so it became a lazy per-subject provision in
+the guard, which is a better fit anyway: the moment somebody becomes able to use
+atrium is a superuser issuing a grant, an event atrium is never told about.
+`?token=` is gone from cover and media URLs, which is the concrete payoff of the
+one-origin decision.
+
+*prm* — nothing is gated by default, and that is the property worth protecting:
+it is a public resource map, so the root hook resolves a session only when a
+cookie is present and the guards are opt-in. **When Ward is down the public map
+still works**, because it never asks Ward anything. `prm:admin` does not imply
+`prm:user`; grants are a set, not a ladder, and assuming otherwise would have
+produced an admin who could not open their own favourites.
+
+*newspapper* — the real decision, and the corpus said it must not default.
+`/uploads/*` was public because headless Chromium fetches images carrying no
+cookie; on loopback the exposure was bounded by ref entropy **and an unreachable
+port**, and the VPS removes the second half. The expected fix was a
+render-scoped token. Rejected again, for a better reason: `render/fonts.ts`
+already intercepted font requests inside the browser context and served them
+from disk, so the same mechanism **removes the request instead of authorising
+it**. No new bearer credential exists — no lifetime, no signing key, no leak
+path, no revocation story — and the route is now guarded like everything else.
+The lockout was removed rather than retuned: there is no credential here to
+brute-force.
+
+*imbatranimOS* — the lock screen could not survive as a lock. Brief 101's design
+covered the desktop while keeping PTY sockets and dirty buffers alive, and
+unlocking re-proved the local password; re-proving Ward's means navigating away,
+which destroys the thing being protected. So the cover was kept and **the claim
+was dropped** — it is a privacy screen, the Start menu says "Cover screen", and
+the panel says so in words. Two consequences fell out: a restore no longer
+revokes anything (credentials are not in the database being swapped, and the
+test was **inverted rather than deleted**), and the WS upgrade gained a grant
+check, without which anyone who registered at prm could open a shell.
+
+*sports-app* — the biggest security gain, because it had the least. One shared
+secret authenticated the *deployment* and `?user=` chose the stream, so anyone
+holding it could read anyone's training history by editing a query parameter —
+which the file header said plainly. The stream key is the session's subject now,
+`?user=` is removed rather than ignored, and the document-versus-target check on
+`PUT` is stronger than before because one side is no longer client-supplied.
+
+**Deploy plumbing.** `WardStack.identityFor(consumer)` hands out a required
+`WARD_APP_KEY` secret declared against the consumer's own stack, and four apps
+call `useWard(ward.identityFor(app))` — so the dependency edge exists *because*
+the identity was read, which is what the CDK-style refactor was for.
+`node cli.ts --graph` shows the four edges; `synth` is clean.
+
+**What is not done, stated plainly.** newspapper has **no vps-deploy stack at
+all** and needs one plus a Caddy block. Nothing has been deployed, nothing has
+run against a real browser, and **no destructive migration has been executed** —
+atrium's `20260906000000-ward-cutover`, prm's `0001_ward_cutover.sql` and
+newspapper's schema v5 are written and unrun. Each destroys accounts and has no
+meaningful `down`; take a database copy first. sports-app carries one deliberate
+loose end: `settings.sync.secret` is still in its document schema, inert and
+labelled, because removing it is a separate version bump.
+
+## [2026-09-06] build | A documentation site at `/ward/docs`, and a `/<project>/docs` convention for the estate
+
+**The gap this closes was already named.** `wiki/status.md` had been recording
+"no `architecture.md`, `api.md` or `data.md`" as a real gap rather than a
+not-yet, and saying the app-key surface — the third thing an integrator needs —
+was documented only in code and decisions. Those three pages now exist as
+authored pages on a Starlight site in `docs/`, written against the code rather
+than against the corpus, and the corpus is rendered alongside them rather than
+duplicated into them.
+
+**Three sources, kept apart because they rot differently.** Authored pages
+(architecture, topology, sessions, introspection, grants, app keys, HTTP API,
+data model, configuration) are hand-written and are the only place the schema
+and the route table are described. The corpus is synced on every build by
+`docs/scripts/sync-corpus.mjs` into `src/content/docs/wiki/`, gitignored and
+banner-marked so nobody edits the copy. `@ward/client`'s public barrel is
+TypeDoc'd into `public/reference/client/`, so the one surface consuming apps
+actually call cannot drift from what the module exports.
+
+**Diagrams are compiled and validated, not drawn.** Three
+[archify](https://github.com/tt-a1i/archify) sources live in `docs/diagrams/` as
+typed JSON — the estate architecture, the login-and-first-request sequence, and
+the refresh-family lifecycle — and are delivered to self-contained interactive
+HTML through archify's `deliver` command, which runs nine artifact checks and
+refuses to commit an artifact that fails one. Getting the architecture diagram
+to pass took four rounds and the binding constraint was one worth knowing: a
+`viewBox` wider than about 1160 projects node sublabels below the 6px legible
+floor at a 1440px viewport, so "make it wider so the labels fit" is exactly
+backwards.
+
+**The rendered HTML is committed, deliberately.** archify is an *agent skill*
+installed per-machine under `~/.claude/skills`, not an npm dependency, and the
+docs build runs wherever `vps-deploy` runs. So `build-diagrams.mjs` regenerates
+where the skill is present and otherwise verifies that every source has an
+artifact, naming any that is missing. A machine without archify can still build
+and deploy; a machine with it edits the JSON, which is the part worth
+versioning.
+
+**The route convention is the estate-wide half.** Docs used to sit at
+`/game-engine-docs` and `/imbatranim-os-docs` — sibling prefixes chosen
+independently, agreeing by accident, with nothing saying where a third should
+go. Every project now documents itself at **`/<project>/docs`**, implemented as
+a `DocsSite` construct in `vps-deploy` and written up in
+`vps-deploy/docs/docs-route-convention.md`. Both existing sites were moved with
+no redirect from the old prefix; their served directories did not change.
+
+**Nesting inside the app's own prefix needed a guard, and exposed a real hole
+in the one that existed.** `/ward/docs` sits inside `/ward/*`, so it is reachable
+only because its block is written above the app's. `DocsSite` pins that (route
+order 10 against the app default of 100), but `validateEstate`'s shadowing check
+used to **skip routes that shared an owning stack**, on the reasoning that
+intra-stack ordering was the stack's own business. That exemption was unsound —
+shadowing is a property of the rendered file, not of ownership — and this
+convention is the shape that exposes it. The check is now universal, and
+breaking the order pin fails `synth` by name instead of rendering a Caddyfile
+whose docs 404 at runtime. Verified by deliberately inverting the pin.
+
+Ward's own gates stayed green throughout: 895 tests, typecheck and lint clean,
+with `docs` added as a fourth workspace whose script is `docs` rather than
+`build` so `npm run build --workspaces` is unaffected.

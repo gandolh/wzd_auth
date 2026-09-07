@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "The refresh family — rotation, the race, and the alarm",
+    "viewBox": [
+      1000,
+      700
+    ],
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "rotation",
+        "label": "The rotation loop",
+        "focus": [
+          "login",
+          "active",
+          "claim",
+          "rotated"
+        ],
+        "note": "Every refresh spends one token and mints its successor in the same family."
+      },
+      {
+        "id": "alarm",
+        "label": "The stolen-cookie alarm",
+        "focus": [
+          "claim",
+          "reuse",
+          "dead"
+        ],
+        "note": "A token presented twice is the theft signal, and the whole family dies."
+      },
+      {
+        "id": "carve-out",
+        "label": "The case that is not theft",
+        "focus": [
+          "claim",
+          "raced",
+          "active"
+        ],
+        "note": "Two tabs presenting the same token is a race, not a replay — the family survives."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "The family, while it lives"
+    },
+    {
+      "id": "events",
+      "label": "What a lost claim means"
+    },
+    {
+      "id": "terminal",
+      "label": "Ends"
+    }
+  ],
+  "states": [
+    {
+      "id": "login",
+      "type": "start",
+      "label": "Login",
+      "sublabel": "family minted",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "active",
+      "type": "active",
+      "label": "Active",
+      "sublabel": "access valid ≤ 15 min",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "claim",
+      "type": "decision",
+      "label": "Claim",
+      "sublabel": "WHERE used_at IS NULL",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "one statement"
+    },
+    {
+      "id": "rotated",
+      "type": "active",
+      "label": "Rotated",
+      "sublabel": "R2 is the tip",
+      "lane": "main",
+      "col": 3,
+      "step": "04"
+    },
+    {
+      "id": "raced",
+      "type": "failure",
+      "label": "Same-token race",
+      "sublabel": "successor is fresh",
+      "lane": "events",
+      "col": 0,
+      "tag": "not theft"
+    },
+    {
+      "id": "reuse",
+      "type": "failure",
+      "label": "Replay",
+      "sublabel": "used_at already set",
+      "lane": "events",
+      "col": 1,
+      "tag": "family dies"
+    },
+    {
+      "id": "dead",
+      "type": "failure",
+      "label": "Family revoked",
+      "sublabel": "marked, never deleted",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "t-login",
+      "from": "login",
+      "to": "active"
+    },
+    {
+      "id": "t-present",
+      "from": "active",
+      "to": "claim",
+      "label": "refresh presented",
+      "labelAt": [
+        325,
+        202
+      ]
+    },
+    {
+      "id": "t-won",
+      "from": "claim",
+      "to": "rotated",
+      "label": "won",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "id": "t-race",
+      "from": "claim",
+      "to": "raced",
+      "label": "lost · fresh tip",
+      "labelAt": [
+        400,
+        250
+      ]
+    },
+    {
+      "id": "t-reuse",
+      "from": "claim",
+      "to": "reuse",
+      "label": "lost · stale tip",
+      "variant": "security"
+    },
+    {
+      "id": "t-sweep",
+      "from": "reuse",
+      "to": "dead",
+      "variant": "security"
+    },
+    {
+      "id": "t-recover",
+      "from": "raced",
+      "to": "active",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "id": "t-loop",
+      "from": "rotated",
+      "to": "active",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          556,
+          100
+        ],
+        [
+          248,
+          100
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Why the claim is one statement",
+      "items": [
+        "The single-use guarantee IS the WHERE used_at IS NULL inside the UPDATE",
+        "Split into SELECT-then-UPDATE, two callers both see an unspent token",
+        "That is exactly the case reuse detection exists to catch"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Why the whole family dies",
+      "items": [
+        "Victim and thief both hold descendants of one root",
+        "Nothing distinguishes them, so revoking one leaves the wrong half live",
+        "Both re-authenticate; only the one who knows the password returns"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "The two ends not drawn here",
+      "items": [
+        "Logout and admin revoke mark the family dead from Active",
+        "A family lapses 30 days after LOGIN — absolute, never sliding",
+        "A sliding window would make a family immortal while anyone rotates it"
+      ]
+    }
+  ]
+}

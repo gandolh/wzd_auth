@@ -1,0 +1,112 @@
+---
+title: HTTP API
+description: Every route Ward serves, what authenticates it, and the conventions that hold across all of them.
+---
+
+Ward is served behind `handle_path /ward-api/*`, which **strips the prefix**. So
+a route written `/login` in the source is `POST /ward-api/login` to a caller,
+and Ward itself never sees the prefix. Every path below is given as the caller
+sees it.
+
+## Conventions that hold everywhere
+
+- **A refusal names the request, never the server.** Any unhandled throw becomes
+  `{"error":"internal"}`. The default Fastify behaviour puts `err.message` in
+  the body, and the reproduction was as bad as it sounds: a missing signing key
+  plus correct credentials answered `500` with the absolute on-disk path of the
+  estate's signing key, from the one route the whole internet can reach
+  unauthenticated.
+- **Per-session answers are `no-store`.** Nothing between Ward and a caller may
+  hold one.
+- **Ambiguous failures are one answer.** Login, introspection and the app-key
+  guard each collapse their failure modes deliberately; see the relevant page.
+- **Query strings are logged.** Fastify's request log line includes the URL, so
+  nothing secret may travel in one — with the single audited exception of
+  `GET /verify?token=`, which has its own log serializer to redact it.
+
+## Public — no credential
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/health` | Liveness. Static answer. |
+| `GET` | `/.well-known/jwks.json` | The public half of the signing key. What every app fetches to verify locally. |
+| `GET` | `/apps` | Apps open to public registration, for the register page's app picker. |
+| `POST` | `/register` | Create an account at an app whose `public_registration` flag is on. |
+| `GET` | `/verify?token=` | Consume an emailed verification token. The one route allowed a secret in the query string, because an email client must be able to link to it. |
+
+## Session — the access cookie
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/login` | Identifier + password. Sets the access and refresh cookies. |
+| `POST` | `/refresh` | Spends the refresh cookie, rotates the family, reissues both. |
+| `POST` | `/logout` | Revokes the family. Rows are marked, not deleted. |
+| `GET` | `/session` | The browser's introspection. Cookie-authenticated, no app key. |
+| `GET` | `/account` | This account's own identity and grants. |
+| `POST` | `/account/password` | Change own password. |
+| `POST` | `/account/sessions/revoke-others` | Sign out every other session, keeping this one. |
+
+`POST /login` collapses every failure into one answer, and unknown identifiers
+still spend a dummy hash so timing does not leak account existence. The lockout
+is deliberately **not** keyed on `request.ip` — see
+[decisions-implementation](/wiki/decisions-implementation/).
+
+## Service — the app key
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/introspect` | Is this session live, and what may it do? Requires `x-ward-app-key`. |
+
+The one endpoint apps call. Fully described in
+[Introspection and revocation](/introspection/).
+
+## Console — the superuser cookie
+
+Every path below sits under `/console/` and that is functional, not cosmetic:
+the `ward_console` cookie is scoped to `Path=/ward-api/console`, so a route
+mounted anywhere else would simply never receive it.
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/console/login` | Superuser sign-in. Separate credential, separate cookie. |
+| `POST` | `/console/logout` | End the console session. |
+| `GET` | `/console/session` | Whether the console session is live. |
+| `GET` | `/console/apps` | List apps. |
+| `POST` | `/console/apps` | Create an app. |
+| `GET` | `/console/apps/:slug` | One app. |
+| `PATCH` | `/console/apps/:slug` | Change name, registration flag, baseline role. |
+| `DELETE` | `/console/apps/:slug` | Delete an app — **cascades to every grant into it**. |
+| `GET` | `/console/apps/:slug/keys` | Keys issued to one app. |
+| `POST` | `/console/apps/:slug/keys` | Mint a key. Shown once, never again. |
+| `GET` | `/console/app-keys` | Every key across every app. |
+| `POST` | `/console/app-keys/:id/revoke` | Revoke a key immediately. |
+| `GET` | `/console/accounts` | List accounts. |
+| `POST` | `/console/accounts` | Create an account. |
+| `GET` | `/console/accounts/:subject` | One account. |
+| `POST` | `/console/accounts/:subject/enable` | Re-enable a disabled account. |
+| `POST` | `/console/accounts/:subject/disable` | Disable. Existing sessions stop introspecting as active. |
+| `POST` | `/console/accounts/:subject/password` | Set a password on behalf of an account. |
+| `GET` | `/console/accounts/:subject/sessions` | Live refresh families for an account. |
+| `POST` | `/console/accounts/:subject/sessions/revoke` | Revoke all of them. |
+| `DELETE` | `/console/accounts/:subject/sessions/:familyId` | Revoke one. |
+| `GET` | `/console/grants` | Grants, filterable. |
+| `POST` | `/console/grants` | Grant a role. |
+| `DELETE` | `/console/grants` | Remove a grant. |
+| `GET` | `/console/audit` | The audit log, newest first. |
+
+The six admin plugins each attach the console guard as a **plugin-scope**
+`preHandler`, so registering them opens nothing — they gate themselves.
+
+:::note[A Fastify detail worth knowing before you add a route]
+Several console plugins mount paths under `/console/accounts/:subject` and
+`/console/apps/:slug`. Fastify merges those into one radix tree only while every
+plugin spells the parameter the same way. Rename `:subject` to `:sub` in one
+place and Fastify refuses to boot with a parametric-conflict error — which is
+the good outcome, but it is a boot failure, not a test failure.
+:::
+
+## Generated reference
+
+The `@ward/client` surface — the types and functions a consuming app actually
+calls — is [generated by TypeDoc](/reference/client/) from the package's public
+barrel, so it cannot drift from what the module exports.
