@@ -880,3 +880,40 @@
   display: flex;
   gap: var(--ward-space-2);
 }
+
+/* --------------------------------------------------------------------------
+ * The one-time app key reveal
+ * ----------------------------------------------------------------------- */
+
+/*
+ * A key is shown exactly once and is then unrecoverable, so this block is
+ * optimised for one job: being selected and copied correctly, in full, on the
+ * first try.
+ *
+ * `user-select: all` makes one click select the whole value — a key is 47
+ * characters of base64url with no word boundaries, and a double-click that
+ * grabs a fragment produces a deployment that fails authentication with a
+ * perfectly valid-looking string in its environment.
+ *
+ * It wraps rather than scrolling: a horizontally scrolled `<pre>` can hide the
+ * tail of the value, and a truncated key is exactly the failure this panel
+ * exists to prevent.
+ */
+.wc-key-reveal {
+  margin: var(--ward-space-3) 0;
+  padding: var(--ward-space-3);
+  border: var(--ward-rule) solid var(--ward-border);
+  border-radius: var(--ward-radius);
+  background: var(--ward-surface-sunken);
+  font-family: var(--ward-font-mono);
+  font-size: var(--ward-text-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: all;
+}
+
+/* A revoked key stays in the list as history; it must not read as live. */
+.wc-table tbody tr[data-revoked="true"] td {
+  color: var(--ward-text-faint);
+}

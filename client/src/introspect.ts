@@ -1,4 +1,4 @@
-import { WardUnavailableError } from "./errors.js";
+import { WardConfigurationError, WardUnavailableError } from "./errors.js";
 import { DEFAULT_INTROSPECTION_CACHE_TTL_MS } from "./claims.js";
 import type { SessionResolution } from "./session.js";
 
@@ -21,6 +21,23 @@ export interface IntrospectorOptions {
    * `http://127.0.0.1:PORT/introspect` against a local test server.
    */
   introspectUrl: URL;
+  /**
+   * This app's Ward app key — the value of Ward's `x-ward-app-key` header.
+   *
+   * **Required, and there is no default.** `POST /introspect` refuses every
+   * request that does not carry one, so an app without a key cannot
+   * authenticate anybody at all. It is required rather than optional
+   * specifically so that omitting it is a compile error in the consuming app
+   * rather than a `401` discovered in production: a missing key is not a
+   * degraded mode, it is a total outage for that app, and the type system is
+   * the cheapest place to catch it.
+   *
+   * Issued from Ward's console (`POST /console/apps/:slug/keys`) and shown
+   * exactly once. It is a **secret** and belongs in the app's server-side
+   * environment — never in a bundle, a client-side config object, or anything
+   * a browser receives.
+   */
+  appKey: string;
   /** Injectable fetch — the seam that lets a test point this at a local server, or a staging Ward. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
   /** How long a resolved answer is trusted, per token. Defaults to `DEFAULT_INTROSPECTION_CACHE_TTL_MS` (30s) — do not raise this in production. */
@@ -80,7 +97,13 @@ export function createIntrospector(
       try {
         response = await fetchImpl(options.introspectUrl, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            // The app's own credential, distinct from the user's token in the
+            // body below. Ward checks this first and refuses before doing any
+            // work on an unauthenticated caller's behalf.
+            "x-ward-app-key": options.appKey,
+          },
           body: JSON.stringify({ accessToken: token }),
           signal: controller.signal,
         });
@@ -95,6 +118,17 @@ export function createIntrospector(
     // other status — a 500 included — means Ward is broken, not that the
     // session is dead. See the class comment: this must fail closed, not read
     // as `active: false`.
+    // A 401 is the one status with a specific cause worth naming: Ward
+    // received the request and rejected *this app's* key. Retrying will not
+    // help and Ward is not down — the key is absent, wrong, or revoked.
+    // `WardConfigurationError` extends `WardUnavailableError`, so this still
+    // fails closed everywhere the broader class already did.
+    if (response.status === 401) {
+      throw new WardConfigurationError(
+        "Ward rejected this app's key (401). Check WARD_APP_KEY: it is absent, wrong, or has been revoked in Ward's console.",
+      );
+    }
+
     if (response.status !== 200) {
       throw new WardUnavailableError(`introspect returned unexpected status ${response.status}`);
     }

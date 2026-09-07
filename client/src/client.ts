@@ -28,6 +28,21 @@ export interface WardClientOptions {
    * (a bare local test server, typically).
    */
   apiBasePath: string;
+  /**
+   * This app's Ward app key, from its server-side environment
+   * (`WARD_APP_KEY`). Sent as `x-ward-app-key` on every introspection.
+   *
+   * **Required.** Ward refuses `POST /introspect` without it, so an app that
+   * omits it can authenticate nobody — see `introspect.ts#IntrospectorOptions`
+   * on why that is a required field rather than an optional one.
+   *
+   * A secret. `createWardClient` is therefore a **server-side** constructor:
+   * anything that runs in a browser must not call it, because a key in a
+   * bundle is a published key. Nothing in this package enforces that — there
+   * is no runtime that could — so it is a rule an app follows by keeping this
+   * package out of its client build.
+   */
+  appKey: string;
   /** Expected `iss` on a verified token. Defaults to `publicOrigin`. Override only for a test/staging Ward with a different signing identity than its own origin. */
   issuer?: string;
   /** Expected `aud`. Defaults to Ward's estate-wide audience. */
@@ -109,6 +124,7 @@ export function createWardClient(options: WardClientOptions): WardClient {
 
   const introspectFn = createIntrospector({
     introspectUrl: introspectEndpoint,
+    appKey: options.appKey,
     fetch: options.fetch,
     cacheTtlMs: options.introspectionCacheTtlMs,
     timeoutMs: options.introspectTimeoutMs,

@@ -18,6 +18,31 @@ would be published or linked as a normal npm dependency; its own dependency is
 just `jose` (pinned to `6.2.10`), and `fastify` is an **optional peer** — the
 core has no runtime dependency on it at all.
 
+## Every app needs a key
+
+`POST /ward-api/introspect` refuses any request that does not carry a valid
+`x-ward-app-key`, so `appKey` is a **required** option — an app without one
+authenticates nobody. Issue it from Ward's console (the app's page → *Service
+keys*); it is shown once and cannot be read back.
+
+It is a **secret**, and `createWardClient` is therefore a server-side
+constructor. A key in a browser bundle is a published string, not a
+credential. Keep this package out of your client build.
+
+```ts
+const ward = createWardClient({
+  publicOrigin: process.env.WARD_PUBLIC_ORIGIN!,
+  apiBasePath: "/ward-api",
+  appKey: process.env.WARD_APP_KEY!, // required
+});
+```
+
+If the key is absent, wrong, or revoked, Ward answers `401` and this package
+raises **`WardConfigurationError`** — a subclass of `WardUnavailableError`, so
+existing fail-closed handling already catches it, while the message names
+`WARD_APP_KEY` so the failure reads as "my deployment is broken" rather than
+"Ward is down" or, worse, "everyone is signed out".
+
 ## The one thing every app must get right: the base path
 
 Ward is served behind Caddy at `/ward-api/*`. Every app in this estate must
@@ -36,6 +61,7 @@ import { createWardClient } from "@ward/client";
 const ward = createWardClient({
   publicOrigin: "https://gandolh.ro", // WARD_PUBLIC_ORIGIN, bare origin, no trailing slash
   apiBasePath: "/ward-api", // required — see above
+  appKey: process.env.WARD_APP_KEY!, // required — see above
 });
 ```
 
@@ -49,6 +75,7 @@ import { wardFastifyPlugin } from "@ward/client/fastify";
 const ward = createWardClient({
   publicOrigin: process.env.WARD_PUBLIC_ORIGIN!,
   apiBasePath: "/ward-api",
+  appKey: process.env.WARD_APP_KEY!,
 });
 
 const app = Fastify();

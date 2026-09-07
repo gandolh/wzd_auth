@@ -2,12 +2,13 @@ import type Database from "better-sqlite3";
 
 import { getDb } from "../../db/connection.js";
 import type { AppRow } from "../../db/apps.js";
+import type { AppKeyRow } from "../../db/app-keys.js";
 import type { GrantRow } from "../../db/grants.js";
 import type { UserRow } from "../../db/users.js";
 
 /**
- * Shared plumbing for the three console admin plugins — `apps.ts`, `grants.ts`
- * and `accounts.ts`.
+ * Shared plumbing for the console admin plugins — `apps.ts`, `grants.ts`,
+ * `accounts.ts` and `app-keys.ts`.
  *
  * Two things live here and nothing else should. The **response shapes** brief
  * 10's console UI builds against, so that "what does an app look like over the
@@ -178,3 +179,38 @@ export function grantView(row: GrantRow): GrantView {
  * solving the wrong problem.
  */
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * An `app_keys` row as JSON. **No `key_hash`**, and that omission is the reason
+ * this mapper exists rather than the route spreading the row — the digest is not
+ * the key, but it is also not something a console page has any use for, and the
+ * `accountView` precedent is that a sensitive column is dropped by a mapper
+ * rather than remembered about at each call site.
+ *
+ * `revoked` is the question a console list asks; `revokedAt` says when.
+ * `lastUsedAt` is **coarse** — stamped at most hourly (see the migration) — and
+ * the console must render it as "in use recently", never as a precise time.
+ */
+export interface AppKeyView {
+  id: string;
+  appSlug: string;
+  label: string;
+  createdAt: string;
+  createdBy: string;
+  lastUsedAt: string | null;
+  revoked: boolean;
+  revokedAt: string | null;
+}
+
+export function appKeyView(row: AppKeyRow): AppKeyView {
+  return {
+    id: row.id,
+    appSlug: row.app_slug,
+    label: row.label,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+    lastUsedAt: row.last_used_at,
+    revoked: row.revoked_at !== null,
+    revokedAt: row.revoked_at,
+  };
+}

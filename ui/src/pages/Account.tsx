@@ -31,7 +31,7 @@ import { readSession, type Session } from "../lib/session.js";
  *
  * | Asked for | Built against |
  * |---|---|
- * | See my own grants | `POST /introspect` |
+ * | See my own grants | `GET /session` |
  * | See my own email and its verification state | `GET /account` |
  * | Change my password | `POST /account/password` |
  * | Sign out my other devices | `POST /account/sessions/revoke-others` |
@@ -47,7 +47,7 @@ import { readSession, type Session } from "../lib/session.js";
  * No account list, no grant editing, no other person's existence acknowledged.
  * That is the console and it is superuser-only. The strongest version of the
  * rule is structural rather than a review note: every source of identity on
- * this page — `/introspect`, `/account`, `/account/password`,
+ * this page — `/session`, `/account`, `/account/password`,
  * `/account/sessions/revoke-others` — answers **for the caller's own cookie**
  * and cannot be pointed at a subject. There is no parameter to tamper with.
  *

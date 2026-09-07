@@ -34,9 +34,13 @@ let dir: string;
 let app: FastifyInstance;
 let db: Database.Database;
 let subject: string;
+/** The plaintext app key every keyed request in this file presents. */
+let appKey: string;
 
 let mod: {
   introspect: typeof import("./introspect.js");
+  appKey: typeof import("../auth/app-key.js");
+  appKeys: typeof import("../db/app-keys.js");
   auth: typeof import("./auth.js");
   resolve: typeof import("../grants/resolve.js");
   cookie: typeof import("../auth/cookie.js");
@@ -94,19 +98,35 @@ async function login(username = "alice"): Promise<LightMyRequestResponse> {
   return response;
 }
 
-/** Introspect a token the way a browser does: in the `ward_session` cookie. */
-async function introspectCookie(token: string): Promise<LightMyRequestResponse> {
+/**
+ * Introspect the way every consuming app does: the token in the body, this
+ * app's key in `x-ward-app-key`.
+ *
+ * There is no cookie variant any more. The cookie path moved to `GET /session`
+ * (`session.test.ts`) when the key requirement made a browser caller
+ * impossible — see `routes/session.ts` on why a cookie-shaped exemption would
+ * have protected nothing.
+ */
+async function introspect(accessToken: string): Promise<LightMyRequestResponse> {
   return app.inject({
     method: "POST",
     url: "/introspect",
-    headers: { cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${token}` },
-    payload: {},
+    headers: { [mod.appKey.APP_KEY_HEADER]: appKey },
+    payload: { accessToken },
   });
 }
 
-/** Introspect the way a server-side caller does: in the body. */
-async function introspectBody(accessToken: string): Promise<LightMyRequestResponse> {
-  return app.inject({ method: "POST", url: "/introspect", payload: { accessToken } });
+/** Introspect with a caller-chosen key — or none, when `key` is undefined. */
+async function introspectWithKey(
+  accessToken: string,
+  key: string | undefined,
+): Promise<LightMyRequestResponse> {
+  return app.inject({
+    method: "POST",
+    url: "/introspect",
+    headers: key === undefined ? {} : { [mod.appKey.APP_KEY_HEADER]: key },
+    payload: { accessToken },
+  });
 }
 
 /** A correctly-signed token for any subject, optionally already expired. */
@@ -147,6 +167,8 @@ beforeAll(async () => {
 
   mod = {
     introspect: await import("./introspect.js"),
+    appKey: await import("../auth/app-key.js"),
+    appKeys: await import("../db/app-keys.js"),
     auth: await import("./auth.js"),
     resolve: await import("../grants/resolve.js"),
     cookie: await import("../auth/cookie.js"),
@@ -165,6 +187,7 @@ beforeAll(async () => {
   // file that is deliberately never created.
   db = mod.testSupport.freshDb();
   mod.testSupport.seedApps(db);
+  appKey = mod.testSupport.seedAppKey(db, "atrium");
 
   const Fastify = (await import("fastify")).default;
   app = Fastify({ logger: false });
@@ -209,7 +232,7 @@ describe("a live session", () => {
     grant("newspapper", "reader");
 
     const session = await login();
-    const response = await introspectCookie(accessCookie(session));
+    const response = await introspect(accessCookie(session));
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
@@ -224,43 +247,60 @@ describe("a live session", () => {
     grant("prm", "user");
     const session = await login();
 
-    const response = await introspectBody(accessCookie(session));
+    const response = await introspect(accessCookie(session));
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ active: true, subject, grants: { prm: ["user"] } });
   });
 
-  it("prefers the cookie when both are present", async () => {
+  /**
+   * The cookie used to win over the body here. It now does nothing at all, and
+   * that is worth an explicit test rather than an absence: an implementation
+   * that still read the cookie would pass every other test in this file while
+   * quietly answering for the wrong person.
+   */
+  it("ignores the ward_session cookie entirely and answers for the body's token", async () => {
     const session = await login();
-    const live = accessCookie(session);
-    const forSomebodyElse = await mintFor("0".repeat(32));
+    const mine = accessCookie(session);
+    const somebodyElse = await mintFor("0".repeat(32));
 
     const response = await app.inject({
       method: "POST",
       url: "/introspect",
-      headers: { cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${live}` },
-      payload: { accessToken: forSomebodyElse },
+      headers: {
+        [mod.appKey.APP_KEY_HEADER]: appKey,
+        cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${mine}`,
+      },
+      payload: { accessToken: somebodyElse },
     });
 
-    expect(response.json()).toMatchObject({ active: true, subject });
+    // The body's token names a subject with no account, so: not live. If the
+    // cookie were still consulted this would come back active as `subject`.
+    expect(response.json()).toEqual({ active: false });
   });
 
-  it("answers a cookie-only caller that posts no body at all", async () => {
+  it("answers inactive for a cookie-only caller that posts no body at all", async () => {
     const session = await login();
 
     const response = await app.inject({
       method: "POST",
       url: "/introspect",
-      headers: { cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${accessCookie(session)}` },
+      headers: {
+        [mod.appKey.APP_KEY_HEADER]: appKey,
+        cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${accessCookie(session)}`,
+      },
     });
 
+    // A live session, presented the way a browser would — and refused, because
+    // this route no longer has a browser path. `GET /session` is where that
+    // caller went.
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ active: true, subject });
+    expect(response.json()).toEqual({ active: false });
   });
 
   it("is never cached by anything in the chain", async () => {
     const session = await login();
-    const response = await introspectCookie(accessCookie(session));
+    const response = await introspect(accessCookie(session));
 
     // The 30-second cache is the calling app's own in-process one, keyed per
     // session. A per-person authorisation answer in a shared HTTP cache is one
@@ -278,13 +318,13 @@ describe("a live session", () => {
     const session = await login();
     const token = accessCookie(session);
 
-    expect((await introspectCookie(token)).json()).toMatchObject({ grants: {} });
+    expect((await introspect(token)).json()).toMatchObject({ grants: {} });
 
     grant("prm", "admin");
 
     // Same cookie, same token, new authority. This is why grants ride in the
     // response rather than in the claims.
-    expect((await introspectCookie(token)).json()).toMatchObject({
+    expect((await introspect(token)).json()).toMatchObject({
       active: true,
       grants: { prm: ["admin"] },
     });
@@ -296,7 +336,7 @@ describe("the response carries nothing an app cannot justify", () => {
     grant("atrium", "admin");
     const session = await login();
 
-    const response = await introspectCookie(accessCookie(session));
+    const response = await introspect(accessCookie(session));
     const body = response.json<Record<string, unknown>>();
 
     expect(Object.keys(body).sort()).toEqual(["active", "grants", "subject", "username"]);
@@ -313,7 +353,7 @@ describe("the response carries nothing an app cannot justify", () => {
   it("serialises a live session to exactly the documented body and nothing more", async () => {
     const token = accessCookie(await login());
 
-    expect((await introspectCookie(token)).body).toBe(
+    expect((await introspect(token)).body).toBe(
       JSON.stringify({ active: true, subject, username: "Alice", grants: {} }),
     );
   });
@@ -364,7 +404,12 @@ describe("active is false", () => {
   const inactive = JSON.stringify({ active: false });
 
   it("for a request with no token anywhere", async () => {
-    const response = await app.inject({ method: "POST", url: "/introspect", payload: {} });
+    const response = await app.inject({
+      method: "POST",
+      url: "/introspect",
+      headers: { [mod.appKey.APP_KEY_HEADER]: appKey },
+      payload: {},
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe(inactive);
@@ -376,6 +421,7 @@ describe("active is false", () => {
     const response = await app.inject({
       method: "POST",
       url: "/introspect",
+      headers: { [mod.appKey.APP_KEY_HEADER]: appKey },
       payload: { token: "wrong-field-name" },
     });
 
@@ -384,26 +430,44 @@ describe("active is false", () => {
   });
 
   it("for a token that is not a JWS at all", async () => {
-    expect((await introspectBody("not-a-token")).body).toBe(inactive);
+    expect((await introspect("not-a-token")).body).toBe(inactive);
   });
 
   it("for a token whose signature has been tampered with", async () => {
     const token = accessCookie(await login());
     const [header, payload, signature] = token.split(".") as [string, string, string];
-    const flipped = `${signature.slice(0, -2)}${signature.slice(-2) === "AA" ? "AB" : "AA"}`;
 
-    expect((await introspectBody(`${header}.${payload}.${flipped}`)).body).toBe(inactive);
+    /**
+     * Flipped in the **middle**, not at the end.
+     *
+     * An earlier version of this test rewrote the last two characters, and was
+     * flaky at roughly 1 run in 256. An Ed25519 signature is 64 bytes, which is
+     * 86 base64url characters, and the final character carries only 2 significant
+     * bits — its other 4 are ignored on decode. So `"AA"` and `"AB"` decode to
+     * byte-identical signatures, and whenever the original happened to end in a
+     * character pair that collapsed the same way, the "tampered" token was in
+     * fact the untampered one and verified perfectly.
+     *
+     * A character in the middle has all 6 bits significant, so changing it
+     * always changes the bytes.
+     */
+    const at = Math.floor(signature.length / 2);
+    const tampered =
+      signature.slice(0, at) + (signature[at] === "A" ? "B" : "A") + signature.slice(at + 1);
+    expect(tampered).not.toBe(signature);
+
+    expect((await introspect(`${header}.${payload}.${tampered}`)).body).toBe(inactive);
   });
 
   it("for an expired token, however recently the session was live", async () => {
     await login(); // a live family exists, so only `exp` can be the reason
     const stale = await mintFor(subject, new Date(Date.now() - 20 * 60_000));
 
-    expect((await introspectBody(stale)).body).toBe(inactive);
+    expect((await introspect(stale)).body).toBe(inactive);
   });
 
   it("for a correctly-signed token naming a subject with no account", async () => {
-    expect((await introspectBody(await mintFor("0".repeat(32)))).body).toBe(inactive);
+    expect((await introspect(await mintFor("0".repeat(32)))).body).toBe(inactive);
   });
 
   it("for an account with a valid token but no live refresh family", async () => {
@@ -411,7 +475,7 @@ describe("active is false", () => {
     const token = accessCookie(await login());
     mod.refreshTokens.revokeAllForSubject(db, subject, "admin");
 
-    expect((await introspectBody(token)).body).toBe(inactive);
+    expect((await introspect(token)).body).toBe(inactive);
   });
 
   it("for a family swept by reuse detection", async () => {
@@ -419,7 +483,7 @@ describe("active is false", () => {
     const [live] = mod.refreshTokens.listLiveTokensForSubject(db, subject);
     mod.refreshTokens.revokeFamily(db, live!.family_id, "reuse_detected");
 
-    expect((await introspectBody(token)).body).toBe(inactive);
+    expect((await introspect(token)).body).toBe(inactive);
   });
 
   /**
@@ -432,7 +496,7 @@ describe("active is false", () => {
   it("after a real logout, even though the access token still verifies", async () => {
     const session = await login();
     const token = accessCookie(session);
-    expect((await introspectBody(token)).json()).toMatchObject({ active: true });
+    expect((await introspect(token)).json()).toMatchObject({ active: true });
 
     const loggedOut = await app.inject({
       method: "POST",
@@ -443,7 +507,7 @@ describe("active is false", () => {
 
     // The signature is still valid; Ward's answer is not.
     await expect(mod.service.verifyWardAccessToken(token)).resolves.toMatchObject({ sub: subject });
-    expect((await introspectBody(token)).body).toBe(inactive);
+    expect((await introspect(token)).body).toBe(inactive);
   });
 
   /**
@@ -456,7 +520,7 @@ describe("active is false", () => {
     grant("atrium", "admin");
     const token = accessCookie(await login());
 
-    expect((await introspectCookie(token)).json()).toMatchObject({
+    expect((await introspect(token)).json()).toMatchObject({
       active: true,
       grants: { atrium: ["admin"] },
     });
@@ -466,12 +530,12 @@ describe("active is false", () => {
     // Nothing was revoked and nothing expired: the family is still live and the
     // token still verifies. The account being disabled is the whole reason.
     expect(mod.refreshTokens.listLiveTokensForSubject(db, subject)).toHaveLength(1);
-    expect((await introspectCookie(token)).body).toBe(inactive);
-    expect((await introspectBody(token)).body).toBe(inactive);
+    expect((await introspect(token)).body).toBe(inactive);
+    expect((await introspect(token)).body).toBe(inactive);
 
     // And re-enabling restores it, grants intact.
     mod.users.setDisabled(db, subject, false);
-    expect((await introspectCookie(token)).json()).toMatchObject({
+    expect((await introspect(token)).json()).toMatchObject({
       active: true,
       grants: { atrium: ["admin"] },
     });
@@ -484,12 +548,17 @@ describe("active is false", () => {
     mod.users.setDisabled(db, subject, true);
 
     const bodies = await Promise.all([
-      app.inject({ method: "POST", url: "/introspect", payload: {} }),
-      introspectBody("not-a-token"),
-      introspectBody(await mintFor("0".repeat(32))),
-      introspectBody(await mintFor(subject, new Date(Date.now() - 20 * 60_000))),
-      introspectBody(token),
-      introspectBody(mod.superuser.openConsoleSession().token),
+      app.inject({
+        method: "POST",
+        url: "/introspect",
+        headers: { [mod.appKey.APP_KEY_HEADER]: appKey },
+        payload: {},
+      }),
+      introspect("not-a-token"),
+      introspect(await mintFor("0".repeat(32))),
+      introspect(await mintFor(subject, new Date(Date.now() - 20 * 60_000))),
+      introspect(token),
+      introspect(mod.superuser.openConsoleSession().token),
     ]);
 
     for (const response of bodies) {
@@ -522,8 +591,8 @@ describe("the superuser console token cannot open an app", () => {
     // A genuinely live console session: it resolves on the console surface.
     expect(mod.superuser.resolveConsoleSession(opened.token)).toBeDefined();
 
-    expect((await introspectBody(opened.token)).body).toBe(JSON.stringify({ active: false }));
-    expect((await introspectCookie(opened.token)).body).toBe(JSON.stringify({ active: false }));
+    expect((await introspect(opened.token)).body).toBe(JSON.stringify({ active: false }));
+    expect((await introspect(opened.token)).body).toBe(JSON.stringify({ active: false }));
   });
 
   it("because it is not the same kind of thing, and because it has no grants", async () => {
@@ -558,7 +627,7 @@ describe("the endpoint's shape", () => {
     // The zod cap, not a lockout: this route deliberately has no failure
     // budget, so the only bound on an anonymous caller is the size of what it
     // may hand over.
-    const response = await introspectBody("x".repeat(5000));
+    const response = await introspect("x".repeat(5000));
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe(JSON.stringify({ active: false }));
@@ -569,7 +638,7 @@ describe("the endpoint's shape", () => {
     // degrade an attacker, it would sign the estate out — every app reads a
     // 429 as "not live".
     const responses = await Promise.all(
-      Array.from({ length: 30 }, () => introspectBody("not-a-token")),
+      Array.from({ length: 30 }, () => introspect("not-a-token")),
     );
 
     for (const response of responses) {
@@ -579,8 +648,132 @@ describe("the endpoint's shape", () => {
     // And it did not spend brief 03's login budget either: `LockoutSurface` is
     // a closed union, and this route does not borrow `"login"`.
     const session = await login();
-    expect((await introspectCookie(accessCookie(session))).json()).toMatchObject({
+    expect((await introspect(accessCookie(session))).json()).toMatchObject({
       active: true,
     });
+  });
+});
+
+/**
+ * The app key guard.
+ *
+ * The endpoint is published on the public origin — `vps-deploy/stacks/ward.ts`
+ * serves the whole API under `handle_path /ward-api/*` — so "who is allowed to
+ * ask" is a real question here and not a formality. These tests pin the two
+ * properties that make the answer useful: the refusal is uniform, and it is
+ * **not** `{"active":false}`.
+ */
+describe("the app key", () => {
+  const refusal = JSON.stringify({ error: "invalid_app_key" });
+
+  it("refuses a request with no key at all", async () => {
+    const session = await login();
+    const response = await introspectWithKey(accessCookie(session), undefined);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body).toBe(refusal);
+  });
+
+  /**
+   * The single most important assertion in this file.
+   *
+   * If a rejected key answered `{"active":false}`, a mistyped `WARD_APP_KEY`
+   * would present as every one of that app's users being signed out —
+   * simultaneously, silently, with a clean server log. It has to be a status
+   * code, so `@ward/client` can raise `WardConfigurationError` and an operator
+   * can tell "my deployment is broken" from "Ward is down".
+   */
+  it("refuses with 401, never with active: false", async () => {
+    const session = await login();
+    const live = accessCookie(session);
+
+    // The identical token, keyed, is unambiguously live — so the 401 above is
+    // about the key and nothing else.
+    expect((await introspect(live)).json()).toMatchObject({ active: true, subject });
+
+    const unkeyed = await introspectWithKey(live, undefined);
+    expect(unkeyed.statusCode).toBe(401);
+    expect(unkeyed.json()).not.toMatchObject({ active: false });
+  });
+
+  it("gives one answer to absent, malformed, unknown and revoked", async () => {
+    const session = await login();
+    const live = accessCookie(session);
+
+    const revoked = mod.testSupport.seedAppKey(db, "newspapper");
+    const revokedRow = mod.appKeys
+      .listAppKeysForApp(db, "newspapper")
+      .find((row) => row.key_hash === mod.appKeys.hashAppKey(revoked))!;
+    expect(mod.appKeys.revokeAppKey(db, revokedRow.id)).toBe(true);
+
+    const answers = await Promise.all([
+      introspectWithKey(live, undefined),
+      introspectWithKey(live, "not-even-the-right-shape"),
+      introspectWithKey(live, `wak_${"z".repeat(43)}`),
+      introspectWithKey(live, revoked),
+    ]);
+
+    // Byte for byte, all four. A caller must not be able to learn whether a key
+    // they hold was revoked or never existed.
+    for (const answer of answers) {
+      expect(answer.statusCode).toBe(401);
+      expect(answer.body).toBe(refusal);
+    }
+  });
+
+  it("accepts a key issued for any app — the key says who is asking, not what they may see", async () => {
+    grant("atrium", "admin");
+    const session = await login();
+
+    // Deliberate: a key authenticates the caller. It does not scope the answer,
+    // so newspapper's key gets atrium's grants back. That is the decision as
+    // taken — "key authenticates only" — and if it is ever revisited, this test
+    // is the one that has to change first.
+    const response = await introspectWithKey(
+      accessCookie(session),
+      mod.testSupport.seedAppKey(db, "newspapper"),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ active: true, grants: { atrium: ["admin"] } });
+  });
+
+  it("stops working the moment the key is revoked, with no cache in between", async () => {
+    const scratch = mod.testSupport.seedAppKey(db, "sports-app");
+    const session = await login();
+    const live = accessCookie(session);
+
+    expect((await introspectWithKey(live, scratch)).statusCode).toBe(200);
+
+    const row = mod.appKeys
+      .listAppKeysForApp(db, "sports-app")
+      .find((candidate) => candidate.key_hash === mod.appKeys.hashAppKey(scratch))!;
+    expect(mod.appKeys.revokeAppKey(db, row.id)).toBe(true);
+
+    // The very next call, not 30 seconds later: `resolveAppKey` reads the row
+    // every time. Session revocation is the thing bounded by the client's
+    // introspection cache; this credential is not part of that cache.
+    expect((await introspectWithKey(live, scratch)).statusCode).toBe(401);
+  });
+
+  it("records use coarsely — a stamp, not a row per request", async () => {
+    mod.appKey.resetAppKeyTouchThrottle();
+    const scratch = mod.testSupport.seedAppKey(db, "prm");
+    const row = () =>
+      mod.appKeys
+        .listAppKeysForApp(db, "prm")
+        .find((candidate) => candidate.key_hash === mod.appKeys.hashAppKey(scratch))!;
+
+    expect(row().last_used_at).toBeNull();
+
+    await Promise.all(Array.from({ length: 10 }, () => introspectWithKey("not-a-token", scratch)));
+
+    const stamped = row().last_used_at;
+    expect(stamped).not.toBeNull();
+
+    // Ten calls, one stamp — the throttle is what keeps `/introspect` from
+    // becoming a write on the estate's hot path.
+    await introspectWithKey("not-a-token", scratch);
+    expect(row().last_used_at).toBe(stamped);
   });
 });

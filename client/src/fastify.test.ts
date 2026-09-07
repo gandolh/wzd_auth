@@ -6,6 +6,13 @@ import { wardFastifyPlugin } from "./fastify.js";
 import { startFakeWard, type FakeWard } from "./testing/fakeWard.js";
 
 /**
+ * The app key every client in this file presents. Ward refuses `/introspect`
+ * without one, so a fixture that omitted it would be testing a call the real
+ * service never answers.
+ */
+const TEST_APP_KEY = "wak_test_key_for_this_suite";
+
+/**
  * The thin Fastify layer, exercised through `app.inject` (no real socket) —
  * this is what briefs 13/14/15 actually wire up in five of the six apps.
  */
@@ -21,6 +28,7 @@ beforeEach(async () => {
     apiBasePath: "",
     jwksEndpoint: ward.jwksEndpoint,
     introspectEndpoint: ward.introspectEndpoint,
+    appKey: TEST_APP_KEY,
   });
 
   app = Fastify();

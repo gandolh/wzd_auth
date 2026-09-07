@@ -29,6 +29,7 @@ import { consoleApi, type AppView, type GrantView } from "../../console-api.js";
 import { consoleHref } from "./nav.js";
 import { formatWhen, plural } from "./format.js";
 import { useConsole, useConsoleLoad, useWriter } from "./session.js";
+import { AppKeysPanel } from "./AppKeys.js";
 import { Alert, Confirm, Empty, Panel, TextField } from "./ui.js";
 
 export function AppDetailScreen({ slug }: { slug: string }): React.JSX.Element {
@@ -296,10 +297,17 @@ function AppBody({
         )}
       </Panel>
 
+      {/*
+        Above "Remove this app", below the grants: an app's keys are ordinary
+        operational state, not a hazard, and burying them under the delete
+        panel would put the routine action after the irreversible one.
+      */}
+      <AppKeysPanel slug={app.slug} />
+
       <Panel
         title="Remove this app"
         tone="danger"
-        note="Deleting an app removes every grant for it in the same write. It is the one action on this console that silently removes rows you did not name — the audit row records how many went, and that count is the only trace they existed."
+        note="Deleting an app removes every grant for it — and every service key — in the same write. It is the one action on this console that silently removes rows you did not name — the audit row records how many went, and that count is the only trace they existed."
       >
         <div className="wc-actions">
           <button

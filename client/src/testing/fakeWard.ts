@@ -40,6 +40,15 @@ export interface FakeWard {
   readonly jwksEndpoint: URL;
   readonly introspectEndpoint: URL;
   readonly introspectCallCount: number;
+  /** The `x-ward-app-key` header value seen on the most recent `/introspect` call, or `undefined` if none was sent. */
+  readonly lastAppKey: string | undefined;
+  /**
+   * Require this exact app key on `/introspect`, answering `401
+   * {"error":"invalid_app_key"}` to anything else — what the real Ward does.
+   * Pass `undefined` to accept any key (the default, so existing tests that
+   * care about caching and verification need not thread one through).
+   */
+  requireAppKey(key: string | undefined): void;
   mintToken(options?: MintTokenOptions): Promise<string>;
   /** An unsigned (`alg: "none"`) token — jose lets `SignJWT` produce this too, but building it by hand keeps the intent obvious. */
   mintUnsignedToken(options?: MintTokenOptions): string;
@@ -97,6 +106,8 @@ export async function startFakeWard(): Promise<FakeWard> {
 
   const sessions = new Map<string, FakeWardSession>();
   let introspectCallCount = 0;
+  let lastAppKey: string | undefined;
+  let requiredAppKey: string | undefined;
   let forcedStatus: number | undefined;
 
   function currentKey(): KeyEntry {
@@ -128,6 +139,18 @@ export async function startFakeWard(): Promise<FakeWard> {
 
     if (req.method === "POST" && url === "/introspect") {
       introspectCallCount += 1;
+
+      const presented = req.headers["x-ward-app-key"];
+      lastAppKey = typeof presented === "string" ? presented : undefined;
+
+      // The real route checks this first, before the body or the token — so
+      // this double does too, or a test could pass against an ordering the
+      // service does not have.
+      if (requiredAppKey !== undefined && lastAppKey !== requiredAppKey) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_app_key" }));
+        return;
+      }
 
       if (forcedStatus !== undefined) {
         res.writeHead(forcedStatus, { "content-type": "application/json" });
@@ -222,6 +245,12 @@ export async function startFakeWard(): Promise<FakeWard> {
     origin,
     jwksEndpoint: new URL("/.well-known/jwks.json", origin),
     introspectEndpoint: new URL("/introspect", origin),
+    get lastAppKey() {
+      return lastAppKey;
+    },
+    requireAppKey(key: string | undefined) {
+      requiredAppKey = key;
+    },
     get introspectCallCount() {
       return introspectCallCount;
     },

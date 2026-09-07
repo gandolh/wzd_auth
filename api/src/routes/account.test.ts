@@ -8,10 +8,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 /**
  * `/account` — the self-service surface, end to end over real logins.
  *
- * ## Registered alongside `authRoutes` and `introspectRoutes`
+ * ## Registered alongside `authRoutes` and `sessionRoutes`
  *
  * The sessions under test are ones a real `POST /login` produced, and liveness
- * is checked by asking the real `/introspect` — so "the old session is dead and
+ * is checked by asking the real `/session` — so "the old session is dead and
  * the new one works" is asserted through the endpoint every app in the estate
  * actually uses, not through a fixture.
  *
@@ -35,7 +35,7 @@ let subject: string;
 let mod: {
   account: typeof import("./account.js");
   auth: typeof import("./auth.js");
-  introspect: typeof import("./introspect.js");
+  session: typeof import("./session.js");
   cookie: typeof import("../auth/cookie.js");
   lockout: typeof import("../auth/lockout.js");
   password: typeof import("../auth/password.js");
@@ -80,13 +80,19 @@ async function login(address = "203.0.113.9"): Promise<Session> {
   };
 }
 
-/** Is this access token still a live session, according to `/introspect`? */
+/**
+ * Is this access token still a live session, according to `GET /session`?
+ *
+ * `/session` rather than `/introspect`, because this probe holds a **cookie**
+ * and no app key — which is precisely the caller `/session` exists for. The two
+ * routes share `resolveSession`, so this asserts exactly the same liveness rule
+ * `/introspect` applies to six apps.
+ */
 async function isLive(access: string): Promise<boolean> {
   const response = await app.inject({
-    method: "POST",
-    url: "/introspect",
+    method: "GET",
+    url: "/session",
     headers: { cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${access}` },
-    payload: {},
   });
   expect(response.statusCode).toBe(200);
   return response.json().active === true;
@@ -128,7 +134,7 @@ beforeAll(async () => {
   mod = {
     account: await import("./account.js"),
     auth: await import("./auth.js"),
-    introspect: await import("./introspect.js"),
+    session: await import("./session.js"),
     cookie: await import("../auth/cookie.js"),
     lockout: await import("../auth/lockout.js"),
     password: await import("../auth/password.js"),
@@ -146,7 +152,7 @@ beforeAll(async () => {
   const Fastify = (await import("fastify")).default;
   app = Fastify({ logger: false });
   await app.register(mod.auth.authRoutes, { db });
-  await app.register(mod.introspect.introspectRoutes, { db });
+  await app.register(mod.session.sessionRoutes, { db });
   await app.register(mod.account.accountRoutes, { db });
   await app.ready();
 });
@@ -197,18 +203,18 @@ describe("GET /account", () => {
   });
 
   /**
-   * The gap this closes: `/introspect` answers four fields behind a
-   * serialisation schema that makes a fifth impossible by accident — correct
-   * for the endpoint six apps call on every request, and it left the UI unable
-   * to read a person's own email or verification state after a reload.
+   * The gap this closes: `/session` (and `/introspect`, which shares its
+   * response schema) answers four fields behind a serialisation schema that
+   * makes a fifth impossible by accident — correct for the endpoint six apps
+   * call on every request, and it left the UI unable to read a person's own
+   * email or verification state after a reload.
    */
-  it("says what /introspect deliberately will not", async () => {
+  it("says what /session deliberately will not", async () => {
     const session = await login();
     const introspection = await app.inject({
-      method: "POST",
-      url: "/introspect",
+      method: "GET",
+      url: "/session",
       headers: { cookie: `${mod.cookie.ACCESS_COOKIE_NAME}=${session.access}` },
-      payload: {},
     });
 
     expect(Object.keys(introspection.json() as object).sort()).toEqual([

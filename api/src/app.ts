@@ -4,7 +4,9 @@ import { jwksRoutes } from "./routes/jwks.js";
 import { authRoutes } from "./routes/auth.js";
 import { consoleRoutes } from "./routes/console.js";
 import { introspectRoutes } from "./routes/introspect.js";
+import { sessionRoutes } from "./routes/session.js";
 import { adminAppsRoutes } from "./routes/admin/apps.js";
+import { adminAppKeysRoutes } from "./routes/admin/app-keys.js";
 import { adminGrantsRoutes } from "./routes/admin/grants.js";
 import { adminAccountsRoutes } from "./routes/admin/accounts.js";
 import { adminSessionsRoutes } from "./routes/admin/sessions.js";
@@ -89,7 +91,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(consoleRoutes);
   await app.register(introspectRoutes);
 
-  // The five admin plugins each attach `requireConsoleSession` as a
+  /**
+   * `GET /session` — the browser half of introspection, cookie-authenticated.
+   *
+   * Registered beside `/introspect` because the two are one decision read from
+   * two ends: `/introspect` is now server-to-server and carries a mandatory
+   * `x-ward-app-key`, and this is where the first-party UI went when that key
+   * requirement made a browser caller impossible. `routes/session.ts` argues
+   * why exempting cookie-bearing requests instead would have protected nothing.
+   */
+  await app.register(sessionRoutes);
+
+  // The six admin plugins each attach `requireConsoleSession` as a
   // plugin-scope preHandler, so registering them here does not open anything —
   // they gate themselves. Their paths all sit under `/console/` and that is
   // functional rather than cosmetic: the `ward_console` cookie is scoped to
@@ -103,6 +116,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // Fastify refuses to boot with a parametric-conflict error rather than
   // failing at request time.
   await app.register(adminAppsRoutes);
+  // Adds `/console/apps/:slug/keys` alongside `adminAppsRoutes`' own
+  // `/console/apps/:slug`. Same parameter name in both, which is what keeps
+  // find-my-way merging them instead of refusing to boot — the note above
+  // about `:subject` applies verbatim to `:slug` here.
+  await app.register(adminAppKeysRoutes);
   await app.register(adminGrantsRoutes);
   await app.register(adminAccountsRoutes);
   await app.register(adminSessionsRoutes);

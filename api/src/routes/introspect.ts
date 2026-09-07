@@ -2,9 +2,9 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { ACCESS_COOKIE_NAME, readCookie } from "../auth/cookie.js";
+import { readAppKeyHeader, resolveAppKey } from "../auth/app-key.js";
 import { getDb } from "../db/connection.js";
-import { INACTIVE, resolveSession, type SessionResolution } from "../grants/resolve.js";
+import { INACTIVE, resolveSession } from "../grants/resolve.js";
 import { AccessTokenVerificationError } from "../tokens/verify.js";
 import { verifyWardAccessToken } from "../tokens/service.js";
 
@@ -23,6 +23,42 @@ import { verifyWardAccessToken } from "../tokens/service.js";
  * exported and the controller wires it in. The path is **Fastify-side** —
  * Caddy serves Ward under `handle_path /ward-api/*`, so this is
  * `POST /ward-api/introspect` to a caller.
+ *
+ * ## Every call carries an app key
+ *
+ * `x-ward-app-key`, checked before anything else happens
+ * (`auth/app-key.ts`). This endpoint is **published on the public origin** —
+ * `vps-deploy/stacks/ward.ts` serves the whole API with
+ * `handle_path /ward-api/*` — so an earlier revision of this comment, which
+ * said the route "is not reachable from the internet in the deployed
+ * topology", was simply wrong, and two of the decisions below leaned on it.
+ * The key is what makes them true instead of hoped for: an anonymous caller is
+ * refused before Ward verifies a signature or reads a row on their behalf, and
+ * every call that does happen names the app that made it.
+ *
+ * **A bad key is a `401`, not `{"active":false}`**, and it is the single
+ * exception to the one-answer rule below. The rest of this endpoint refuses to
+ * distinguish failures because they are all the same fact to a caller — the
+ * session is not usable. A rejected app key is not that fact. It means the app
+ * is misconfigured, and answering `{"active":false}` to it would sign every one
+ * of that app's users out simultaneously, silently, with a clean server log and
+ * no signal anywhere that anything was wrong. That failure has to be loud, it
+ * has to be distinguishable from a dead session, and `@ward/client` turns it
+ * into a `WardConfigurationError` naming this exact cause.
+ *
+ * The `401` carries `{"error":"invalid_app_key"}` and nothing more: absent,
+ * malformed, unknown and revoked are one answer to a caller, so the endpoint
+ * cannot be used to probe whether a held key was revoked or never existed. The
+ * distinction is on the log line, for an operator.
+ *
+ * ## There is no cookie path here any more
+ *
+ * The token comes from the body. It used to also come from the `ward_session`
+ * cookie, for the benefit of Ward's own UI; that caller now has
+ * `GET /session` (`routes/session.ts`), which explains at length why a
+ * cookie-shaped exemption from the key requirement would have been worthless.
+ * The short version: an attacker picks their own headers, so "no key needed if
+ * you send a cookie" is "no key needed".
  *
  * ## One code path, one answer
  *
@@ -47,6 +83,9 @@ import { verifyWardAccessToken } from "../tokens/service.js";
  * log line naming it, which is the right trade for never handing an app a
  * second code path.
  *
+ * The app key is carved out of this rule on purpose; see above for why a
+ * misconfigured app must not present as an app full of signed-out people.
+ *
  * `500` remains possible and is deliberately **not** swallowed: only
  * `AccessTokenVerificationError` is treated as "not a live session". If the
  * signing key cannot be read, that is Ward being broken, not the session being
@@ -59,18 +98,24 @@ import { verifyWardAccessToken } from "../tokens/service.js";
  * therefore the query string, at info level on every request. An access token
  * in a query parameter would be written to disk on every request of every app,
  * so there is no `GET` variant and no `?token=`. The token arrives in the
- * cookie the browser already sends, or in the request body.
+ * request body, and the app key in a header — neither of which Fastify logs.
  *
  * ## No rate limit, and that is a decision rather than an omission
  *
  * Nothing here counts failures, and nothing here can return `429`.
  *
- * This is a loopback call from six trusted local services on the same box, made
- * on **every request** they serve. A lockout on this surface does not degrade
- * an attacker, it takes the entire estate down: every app reads `429` as "not
- * live", so one noisy client, or one app looping on a genuinely dead session,
- * would sign everybody out of everything. The failure mode is strictly worse
- * than the abuse it would prevent.
+ * This is a call from six trusted services, made on **every request** they
+ * serve. A lockout on this surface does not degrade an attacker, it takes the
+ * entire estate down: every app reads `429` as "not live", so one noisy client,
+ * or one app looping on a genuinely dead session, would sign everybody out of
+ * everything. The failure mode is strictly worse than the abuse it would
+ * prevent.
+ *
+ * What changed with the app key is not this conclusion but the shape of the
+ * option. The surface is no longer anonymous, so a limit could now be applied
+ * **per key** — degrading one misbehaving app rather than the estate — if one is
+ * ever wanted. Nothing counts anything today, and adding a counter would still
+ * need the estate-wide blast radius argued through first.
  *
  * It must also not borrow brief 03's budget. `LockoutSurface` is a closed union
  * (`"login" | "console"`) precisely so that a new credential surface has to add
@@ -81,18 +126,25 @@ import { verifyWardAccessToken } from "../tokens/service.js";
  * own — and the answer here is "no lockout" anyway.
  *
  * What does bound the endpoint: Fastify's default 1 MB body limit, plus the
- * length cap on the token field below, so an anonymous caller cannot post a
- * megabyte for Ward to hash. Genuine abuse from outside the box is Caddy's
- * problem; this route is not reachable from the internet in the deployed
- * topology.
+ * length cap on the token field below, so a caller cannot post a megabyte for
+ * Ward to hash — and the key check, which runs first and refuses everyone who
+ * is not one of six apps before any of that work is done.
  *
- * ## Nothing is written, and nothing is audited
+ * ## Nothing is audited, and almost nothing is written
  *
- * No audit row, no counter, no `used_at` stamp — the endpoint is a pure read.
- * Auditing a call made on every request of every app would turn `audit_log`
- * into a write amplifier fed by ordinary traffic and bury the six lines an
- * operator actually needs (see brief 03's reasoning for not auditing unknown
- * usernames). A revocation is already audited where it happens.
+ * No audit row and no counter. Auditing a call made on every request of every
+ * app would turn `audit_log` into a write amplifier fed by ordinary traffic and
+ * bury the six lines an operator actually needs (see brief 03's reasoning for
+ * not auditing unknown usernames). A revocation is already audited where it
+ * happens.
+ *
+ * The one write is `app_keys.last_used_at`, and it is **throttled to at most
+ * once an hour per key** in `auth/app-key.ts` — so the endpoint is a pure read
+ * on essentially every call, and the exception exists because rotating a key
+ * across six independently deployed apps is unsafe without knowing whether the
+ * old one is still in use. The throttle is what keeps that from becoming the
+ * write amplifier the paragraph above rejects. It is best-effort and never
+ * fails a request.
  *
  * ## Cross-site requests are deliberately not refused
  *
@@ -148,21 +200,18 @@ export interface IntrospectRoutesOptions {
 const introspectBody = z.object({ accessToken: z.string().min(1).max(4096).optional() }).optional();
 
 /**
- * The token to introspect: the `ward_session` cookie, else the body field.
+ * The token to introspect: the body field, and nothing else.
  *
- * **The cookie wins when both are present**, matching `/refresh` and `/logout`.
- * That is the path a browser actually takes, and a body field is the easier of
- * the two to populate with the wrong thing — a stale token a server held onto,
- * say. In the case that matters the two are the same value anyway: a
- * server-side caller has no cookie jar and sends only the body.
+ * The `ward_session` cookie used to win here when present. It no longer
+ * participates at all — this route is server-to-server now, its callers have no
+ * cookie jar, and leaving the cookie branch in place would mean the estate's
+ * most security-sensitive endpoint had a second way in that no app uses and
+ * nobody tests. Browser callers go to `GET /session`.
  *
  * A body that does not parse yields `undefined` rather than a `400`; see the
- * header on why this route has no client-error branch.
+ * header on why this route has no client-error branch for a credential problem.
  */
 function tokenFromRequest(request: FastifyRequest): string | undefined {
-  const cookie = readCookie(request.headers.cookie, ACCESS_COOKIE_NAME);
-  if (cookie !== undefined) return cookie;
-
   const parsed = introspectBody.safeParse(request.body);
   if (!parsed.success) {
     // Deliberately terse and deliberately not echoed: zod's issue list would
@@ -212,6 +261,27 @@ export const INTROSPECT_RESPONSE_SCHEMA = {
   },
 } as const;
 
+/**
+ * What `/introspect` actually declares: the shared `200` shape plus the `401`
+ * that only this route can send.
+ *
+ * Composed rather than folded into `INTROSPECT_RESPONSE_SCHEMA` because
+ * `routes/session.ts` reuses that constant and has no `401` — it answers `200`
+ * for every outcome, by design. Declaring a status a route cannot produce would
+ * make the schema a worse description of the contract than no schema at all,
+ * and `@ward/client` treats "any status but 200" as a hard failure precisely
+ * because that contract is narrow.
+ */
+const INTROSPECT_ROUTE_SCHEMA = {
+  ...INTROSPECT_RESPONSE_SCHEMA,
+  401: {
+    type: "object",
+    properties: { error: { type: "string" } },
+    required: ["error"],
+    additionalProperties: false,
+  },
+} as const;
+
 export async function introspectRoutes(
   app: FastifyInstance,
   options: IntrospectRoutesOptions = {},
@@ -226,8 +296,12 @@ export async function introspectRoutes(
 
   app.post(
     "/introspect",
-    { schema: { response: INTROSPECT_RESPONSE_SCHEMA } },
-    async (request, reply): Promise<SessionResolution> => {
+    { schema: { response: INTROSPECT_ROUTE_SCHEMA } },
+    // No explicit return type: the handler now has two shapes — a
+    // `SessionResolution` and the `401` refusal it sends through `reply` — and
+    // the admin routes established that a handler mixing the two is annotated
+    // by inference rather than by a union that has to name Fastify's reply.
+    async (request, reply) => {
       /**
        * `no-store`, unconditionally. The 30-second cache this endpoint is
        * designed around is the **calling app's** own in-process cache, keyed
@@ -237,6 +311,47 @@ export async function introspectRoutes(
        * nothing in the chain is invited to keep it.
        */
       reply.header("cache-control", "no-store");
+
+      /**
+       * The app key, **first** — ahead of body parsing, signature verification
+       * and every database read except the one indexed lookup this check itself
+       * costs.
+       *
+       * The ordering is the point rather than an accident of layout. The route
+       * is published on the public origin, so anything expensive placed above
+       * this line is work an anonymous caller can make Ward do. `resolveAppKey`
+       * is a prefix test, one `sha256` and one index seek; nothing cheaper than
+       * that belongs in front of it.
+       */
+      const presented = readAppKeyHeader(request);
+      const caller = resolveAppKey(await database(), presented);
+      if (!caller.ok) {
+        /**
+         * One refusal for four causes. The reason is logged at `warn` and never
+         * sent: an operator needs to tell "the key you rotated is still
+         * deployed" from "somebody is guessing", and a caller must not be able
+         * to.
+         *
+         * `warn`, not `debug`, and this is the one log level in the file chosen
+         * upward. Every other rejection here is an ordinary dead session and
+         * would drown an operator at `warn`; this one always means somebody has
+         * to do something — fix a deployment, or look at who is knocking. The
+         * key itself is not logged, in any branch.
+         */
+        request.log.warn(
+          { reason: caller.reason },
+          "introspect: refusing a request with no usable app key",
+        );
+        return reply.code(401).send({ error: "invalid_app_key" });
+      }
+
+      // Attributable from here on. `keyId` and `appSlug` are non-secret
+      // handles — the key is never in a log line, but which app asked is
+      // exactly what an operator reading this endpoint's traffic needs.
+      request.log.debug(
+        { app: caller.app.appSlug, keyId: caller.app.keyId },
+        "introspect: authenticated app",
+      );
 
       const token = tokenFromRequest(request);
       if (token === undefined) return INACTIVE;

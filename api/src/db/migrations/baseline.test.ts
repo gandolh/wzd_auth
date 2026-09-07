@@ -33,7 +33,12 @@ describe("baseline migration", () => {
   it("creates every table the estate needs on a fresh database", () => {
     const db = freshDb();
 
+    // `freshDb` runs the whole `MIGRATIONS` list, not just the baseline, so
+    // `app_keys` (20260906000000) is here too — this assertion is the estate's
+    // full table set rather than one migration's output, and a new migration
+    // adding a table is expected to update it.
     expect(tableNames(db)).toEqual([
+      "app_keys",
       "apps",
       "audit_log",
       "grants",

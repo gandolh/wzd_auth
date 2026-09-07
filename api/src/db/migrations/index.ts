@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 // The `.js` suffix is required: this package is ESM under NodeNext, so a
 // relative specifier carries the *emitted* extension even in `.ts` source.
 import * as baseline from "./20260902000000-baseline.js";
+import * as appKeys from "./20260906000000-app-keys.js";
 
 /**
  * The migration list, as **static imports** rather than a directory the runner
@@ -81,4 +82,7 @@ export interface Migration {
   up(db: Database.Database): void;
 }
 
-export const MIGRATIONS: Migration[] = [{ name: "20260902000000-baseline", up: baseline.up }];
+export const MIGRATIONS: Migration[] = [
+  { name: "20260902000000-baseline", up: baseline.up },
+  { name: "20260906000000-app-keys", up: appKeys.up },
+];

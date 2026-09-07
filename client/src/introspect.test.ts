@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createIntrospector } from "./introspect.js";
-import { WardUnavailableError } from "./errors.js";
+import { WardConfigurationError, WardUnavailableError } from "./errors.js";
 import { startFakeWard, type FakeWard } from "./testing/fakeWard.js";
+
+/**
+ * The app key every client in this file presents. Ward refuses `/introspect`
+ * without one, so a fixture that omitted it would be testing a call the real
+ * service never answers.
+ */
+const TEST_APP_KEY = "wak_test_key_for_this_suite";
 
 /**
  * The 30-second cache and the stampede collapse are the two properties this
@@ -57,6 +64,7 @@ describe("createIntrospector — the 30-second cache", () => {
     const clock = fakeClock();
     const introspect = createIntrospector({
       introspectUrl: ward.introspectEndpoint,
+      appKey: TEST_APP_KEY,
       now: clock.now,
     });
 
@@ -89,6 +97,7 @@ describe("createIntrospector — the 30-second cache", () => {
     const clock = fakeClock();
     const introspect = createIntrospector({
       introspectUrl: ward.introspectEndpoint,
+      appKey: TEST_APP_KEY,
       now: clock.now,
     });
 
@@ -193,6 +202,7 @@ describe("createIntrospector — fail closed", () => {
     const clock = fakeClock();
     const introspect = createIntrospector({
       introspectUrl: ward.introspectEndpoint,
+      appKey: TEST_APP_KEY,
       now: clock.now,
     });
 
@@ -206,5 +216,82 @@ describe("createIntrospector — fail closed", () => {
     // fails — this must reject, never resolve with the stale "active: true"
     // it cached thirty seconds ago.
     await expect(introspect(token)).rejects.toBeInstanceOf(WardUnavailableError);
+  });
+});
+
+/**
+ * The app key, from the caller's side.
+ *
+ * Ward's `/introspect` refuses an unkeyed request before it does anything else,
+ * so these pin the two halves an app depends on: the header is actually sent,
+ * and a refusal is diagnosable rather than being mistaken for Ward being down
+ * or — much worse — for the person being signed out.
+ */
+describe("createIntrospector — the app key", () => {
+  it("sends the key as x-ward-app-key on every call", async () => {
+    ward.setSession("family_1", { active: true, subject: "sub_alice", username: "alice" });
+    const token = await ward.mintToken({ subject: "sub_alice", sessionId: "family_1" });
+
+    const introspect = createIntrospector({
+      introspectUrl: ward.introspectEndpoint,
+      appKey: TEST_APP_KEY,
+    });
+
+    await introspect(token);
+    expect(ward.lastAppKey).toBe(TEST_APP_KEY);
+  });
+
+  it("raises WardConfigurationError — not a plain unavailable — when Ward answers 401", async () => {
+    ward.requireAppKey("wak_the_only_key_ward_accepts");
+    const token = await ward.mintToken({ subject: "sub_alice", sessionId: "family_1" });
+
+    const introspect = createIntrospector({
+      introspectUrl: ward.introspectEndpoint,
+      appKey: "wak_a_stale_key_from_an_old_deploy",
+    });
+
+    await expect(introspect(token)).rejects.toBeInstanceOf(WardConfigurationError);
+    // Names the environment variable, because the whole point is that whoever
+    // reads this in a log knows it is their deployment and not Ward.
+    await expect(introspect(token)).rejects.toThrow(/WARD_APP_KEY/);
+  });
+
+  /**
+   * The compatibility property that let this land without touching six apps'
+   * error handling: everything already fails closed on `WardUnavailableError`,
+   * and a configuration failure must fail closed too — an app that cannot
+   * introspect has to reject requests, not admit them.
+   */
+  it("is still a WardUnavailableError, so existing fail-closed handling catches it", async () => {
+    ward.requireAppKey("wak_the_only_key_ward_accepts");
+    const token = await ward.mintToken({ subject: "sub_alice", sessionId: "family_1" });
+
+    const introspect = createIntrospector({
+      introspectUrl: ward.introspectEndpoint,
+      appKey: "wak_wrong",
+    });
+
+    await expect(introspect(token)).rejects.toBeInstanceOf(WardUnavailableError);
+    // And never a resolved `{ active: false }`, which would read to a caller as
+    // "this person is signed out" rather than "this server is misconfigured".
+    await expect(introspect(token)).rejects.toThrow();
+  });
+
+  it("does not cache a refusal — the fix is a redeploy, and the next call must see it", async () => {
+    ward.requireAppKey(TEST_APP_KEY);
+    const token = await ward.mintToken({ subject: "sub_alice", sessionId: "family_1" });
+    ward.setSession("family_1", { active: true, subject: "sub_alice", username: "alice" });
+
+    const wrong = createIntrospector({
+      introspectUrl: ward.introspectEndpoint,
+      appKey: "wak_wrong",
+    });
+    await expect(wrong(token)).rejects.toBeInstanceOf(WardConfigurationError);
+
+    const right = createIntrospector({
+      introspectUrl: ward.introspectEndpoint,
+      appKey: TEST_APP_KEY,
+    });
+    await expect(right(token)).resolves.toMatchObject({ active: true, subject: "sub_alice" });
   });
 });

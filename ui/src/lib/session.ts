@@ -1,4 +1,4 @@
-import { introspect, refresh, type IntrospectResult } from "./api.js";
+import { readSessionState, refresh, type SessionResult } from "./api.js";
 
 /**
  * Who is signed in, and the one piece of state this UI keeps.
@@ -6,7 +6,7 @@ import { introspect, refresh, type IntrospectResult } from "./api.js";
  * ## Reading the session is two calls, not one
  *
  * The access cookie lives fifteen minutes. So "am I signed in" is:
- * introspect → if `active`, done; if not, **rotate once** and introspect again;
+ * read `/session` → if `active`, done; if not, **rotate once** and read again;
  * if it is still not active, the session is over. That second attempt is what
  * makes a fifteen-minute cookie invisible to somebody who left a tab open over
  * lunch, and without it self-service would sign people out every quarter of an
@@ -50,7 +50,7 @@ export type Session =
 /** The single in-flight read, shared by every caller. */
 let inFlight: Promise<Session> | undefined;
 
-function fromIntrospection(result: IntrospectResult): Session | undefined {
+function fromIntrospection(result: SessionResult): Session | undefined {
   if (!result.active) return undefined;
   // `active: true` always carries the other three, but the response type says
   // "optional" because a dead session carries none of them. Treating a missing
@@ -66,11 +66,11 @@ function fromIntrospection(result: IntrospectResult): Session | undefined {
 }
 
 async function read(): Promise<Session> {
-  let first: IntrospectResult;
+  let first: SessionResult;
   try {
-    first = await introspect();
+    first = await readSessionState();
   } catch {
-    // `/introspect` always answers `200`, so a throw here is the network and
+    // `/session` always answers `200`, so a throw here is the network and
     // never a credential. Saying "Ward isn't answering" is the honest reading;
     // saying "you are signed out" would be a lie that also loses the person's
     // place.
@@ -87,10 +87,10 @@ async function read(): Promise<Session> {
   } catch {
     // `401 invalid_refresh` and a network failure both land here. They are
     // told apart by asking again below rather than by inspecting the error:
-    // if Ward is unreachable the second introspect fails too, and if the
+    // if Ward is unreachable the second read fails too, and if the
     // session is genuinely over it answers `active: false`.
     try {
-      await introspect();
+      await readSessionState();
     } catch {
       return { status: "unreachable" };
     }
@@ -98,7 +98,7 @@ async function read(): Promise<Session> {
   }
 
   try {
-    const second = await introspect();
+    const second = await readSessionState();
     return fromIntrospection(second) ?? { status: "signed-out" };
   } catch {
     return { status: "unreachable" };

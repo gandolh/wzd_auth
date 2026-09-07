@@ -99,6 +99,36 @@ export interface AccountDetailResult {
 }
 
 /** `GET /console/apps/:slug` */
+/**
+ * An app key as the console sees it — **never** the key itself.
+ *
+ * `lastUsedAt` is coarse: Ward stamps it at most once an hour, so it answers
+ * "is this still in use" and must not be rendered as a precise time. That is
+ * exactly the question a rotation asks, and it is why the field exists.
+ */
+export interface AppKeyView {
+  id: string;
+  appSlug: string;
+  label: string;
+  createdAt: string;
+  createdBy: string;
+  lastUsedAt: string | null;
+  revoked: boolean;
+  revokedAt: string | null;
+}
+
+/**
+ * The one response in Ward that carries a usable app key.
+ *
+ * `key` exists here and nowhere else: there is no route that reads one back,
+ * because the database holds only a digest. The console shows it once and says
+ * so.
+ */
+export interface AppKeyCreated {
+  key: string;
+  appKey: AppKeyView;
+}
+
 export interface AppDetailResult {
   app: AppView;
   grantCount: number;
@@ -288,6 +318,12 @@ export function describeConsoleError(status: number, code: string): string {
     case "baseline_role_requires_open":
       return "A baseline role only means something on an app that is open to public registration. Open the app in the same step, or leave the role unset.";
 
+    // App keys.
+    case "app_key_not_found":
+      return "No app key exists with that id. It may already have been removed with its app.";
+    case "app_key_already_revoked":
+      return "That key was already revoked. Reload the list — the one you meant may still be live.";
+
     // Grants.
     case "grant_target_missing":
       return "The account or the app was removed while the grant was being written. Reload and check both ends.";
@@ -348,6 +384,10 @@ export interface ConsoleApi {
   createApp(input: NewApp): Promise<AppView>;
   patchApp(slug: string, patch: AppPatch): Promise<AppView>;
   deleteApp(slug: string): Promise<{ slug: string; grantsRevoked: number }>;
+
+  keysForApp(slug: string): Promise<AppKeyView[]>;
+  createAppKey(slug: string, label: string): Promise<AppKeyCreated>;
+  revokeAppKey(id: string): Promise<AppKeyView>;
 
   grantsForSubject(subject: string): Promise<GrantView[]>;
   grantsForApp(slug: string): Promise<GrantView[]>;
@@ -523,6 +563,30 @@ export function createConsoleApi(fetchImpl?: FetchLike): ConsoleApi {
       return call<{ slug: string; grantsRevoked: number }>(`/apps/${encodeURIComponent(slug)}`, {
         method: "DELETE",
       });
+    },
+
+    async keysForApp(slug) {
+      const result = await call<{ keys: AppKeyView[] }>(`/apps/${encodeURIComponent(slug)}/keys`);
+      return result.keys;
+    },
+
+    /**
+     * Returns the plaintext key. The caller must show it once and must not
+     * store it — there is nowhere to read it back from.
+     */
+    createAppKey(slug, label) {
+      return call<AppKeyCreated>(`/apps/${encodeURIComponent(slug)}/keys`, {
+        method: "POST",
+        body: { label },
+      });
+    },
+
+    async revokeAppKey(id) {
+      const result = await call<{ appKey: AppKeyView }>(
+        `/app-keys/${encodeURIComponent(id)}/revoke`,
+        { method: "POST" },
+      );
+      return result.appKey;
     },
 
     async grantsForSubject(subject) {

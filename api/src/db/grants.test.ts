@@ -169,8 +169,9 @@ describe("grants are the security boundary", () => {
 
   it("there is no wildcard — the owner holds one explicit row per app", () => {
     const owner = seedUser(db, "cristian");
+    const seeded = listApps(db);
 
-    for (const app of listApps(db)) {
+    for (const app of seeded) {
       grantRole(db, {
         subject: owner.subject,
         appSlug: app.slug,
@@ -179,7 +180,10 @@ describe("grants are the security boundary", () => {
       });
     }
 
-    expect(listGrantsForSubject(db, owner.subject)).toHaveLength(3);
+    // Counted from the seeded apps rather than hardcoded: the claim under test
+    // is "one row per app, no wildcard", and it must keep holding as the estate
+    // grows rather than turning into a chore every time an app is added.
+    expect(listGrantsForSubject(db, owner.subject)).toHaveLength(seeded.length);
 
     // A newly added app is reachable by nobody until someone says otherwise.
     createApp(db, { slug: "trips", name: "Trips" });

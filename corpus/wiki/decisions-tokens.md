@@ -1,6 +1,6 @@
 ---
 summary: The locked calls about sessions and tokens — the short-lived signed access token, the opaque rotating refresh token, introspection-with-cache as the revocation mechanism, why there is no JWT denylist, EdDSA signing held by Ward alone, the two lifetimes that define the logout delay, and the calls settled once these were built: the absolute family lifetime, logout revoking rather than deleting, and the sid claim that makes revocation per-session.
-updated: 2026-09-04
+updated: 2026-09-06
 ---
 
 # Decisions — tokens and sessions
@@ -62,6 +62,21 @@ lands in the same short window a revocation does.
 **The cache window is the honest logout delay.** Clicking "log out" also clears
 the cookie, so in the normal case the client simply no longer holds a token —
 the window only matters against a token that was already stolen.
+
+> **Revised 2026-09-06 — introspection is no longer anonymous.** The sentence
+> above about a "loopback call" was wrong about the deployed topology, and two
+> engineering calls rested on it. `vps-deploy/stacks/ward.ts` serves the whole
+> API with `handle_path /ward-api/*` on the public origin, so
+> `POST /ward-api/introspect` is reachable by anyone on the internet — and, as
+> built, it did an Ed25519 verification plus three indexed reads for every
+> anonymous caller that asked, with nothing counting the asks and no way to say
+> who had asked.
+>
+> Every call now carries an **app key** (`x-ward-app-key`), checked before any
+> other work happens — see [decisions-app-keys.md](./decisions-app-keys.md).
+> The decision *in this section* is unchanged: introspection with a short cache
+> is still the revocation mechanism, and the cache window is still the logout
+> delay.
 
 ## Only Ward can sign; apps get a key that can only verify
 _2026-09-01, grilled Q11_ — Asymmetric signing (EdDSA), private key held by Ward

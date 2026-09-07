@@ -71,6 +71,16 @@ const PASSWORD = "correct-horse-battery-staple";
 let dir: string;
 let app: FastifyInstance;
 
+/**
+ * The app key every `introspectAsApp` call presents, issued through the real
+ * console route in flow 1 as soon as the `atrium` app exists.
+ *
+ * Module-level and shared across flows for the same reason `consoleCookie` is:
+ * these suites deliberately chain on one another to reproduce the estate's
+ * actual bring-up sequence rather than re-fixturing between assertions.
+ */
+let estateAppKey: string;
+
 let mod: {
   cookie: typeof import("../auth/cookie.js");
   superuser: typeof import("../auth/superuser.js");
@@ -79,6 +89,7 @@ let mod: {
     closeDb: typeof import("../db/connection.js").closeDb;
   };
   auditLog: typeof import("../db/audit-log.js");
+  appKey: typeof import("../auth/app-key.js");
 };
 
 beforeAll(async () => {
@@ -120,6 +131,7 @@ beforeAll(async () => {
     superuser: await import("../auth/superuser.js"),
     connection: { getDb, closeDb },
     auditLog: await import("../db/audit-log.js"),
+    appKey: await import("../auth/app-key.js"),
   };
 
   const { buildApp } = await import("../app.js");
@@ -198,12 +210,47 @@ async function loginAs(
   };
 }
 
-async function introspectByCookie(accessToken: string): Promise<LightMyRequestResponse> {
+/**
+ * Issue an app key through the real console route, the way an operator does.
+ *
+ * The plaintext comes back exactly once, here and nowhere else — there is no
+ * route that reads one back, by design.
+ */
+async function issueAppKey(
+  consoleCookie: string,
+  slug: string,
+  label = `${slug} integration key`,
+): Promise<{ key: string; id: string }> {
+  const response = await app.inject({
+    method: "POST",
+    url: `/console/apps/${slug}/keys`,
+    headers: withConsole(consoleCookie),
+    payload: { label },
+  });
+  expect(response.statusCode, `POST /console/apps/${slug}/keys`).toBe(201);
+
+  const body = response.json<{ key: string; appKey: { id: string } }>();
+  return { key: body.key, id: body.appKey.id };
+}
+
+/**
+ * Introspect exactly the way a consuming app does: the token in the body, the
+ * app's key in `x-ward-app-key`, and no cookie jar anywhere.
+ *
+ * This used to post the token in the `ward_session` cookie. It does not any
+ * more, and the change is the point rather than an adaptation: `/introspect` is
+ * a server-to-server route now, and this suite's whole purpose is to drive the
+ * paths the estate will actually use.
+ */
+async function introspectAsApp(
+  accessToken: string,
+  key: string = estateAppKey,
+): Promise<LightMyRequestResponse> {
   return app.inject({
     method: "POST",
     url: "/introspect",
-    headers: { cookie: cookieHeader({ [mod.cookie.ACCESS_COOKIE_NAME]: accessToken }) },
-    payload: {},
+    headers: { [mod.appKey.APP_KEY_HEADER]: key },
+    payload: { accessToken },
   });
 }
 
@@ -333,6 +380,11 @@ describe("flow 1 — the console bootstraps the estate", () => {
     const registered = await createApp(consoleCookie, "atrium", "Atrium");
     expect(registered.slug, "the app just registered is named atrium").toBe("atrium");
 
+    // An app cannot introspect anything until it holds a key, so issuing one is
+    // now part of the estate's bring-up sequence and belongs in the test that
+    // documents that sequence.
+    estateAppKey = (await issueAppKey(consoleCookie, "atrium")).key;
+
     const account = await createAccount(consoleCookie, "alice", PASSWORD);
     subject = account.subject;
 
@@ -342,7 +394,7 @@ describe("flow 1 — the console bootstraps the estate", () => {
     const session = await loginAs("alice", PASSWORD, "203.0.113.10");
     accessToken = session.accessToken;
 
-    const introspected = await introspectByCookie(accessToken);
+    const introspected = await introspectAsApp(accessToken);
     expect(introspected.statusCode, "POST /introspect for alice's fresh login").toBe(200);
     expect(
       introspected.json(),
@@ -365,7 +417,7 @@ describe("flow 1 — the console bootstraps the estate", () => {
   it("shows a grant added through the console on the very next introspection — no re-login", async () => {
     await grantRoleViaConsole(consoleCookie, subject, "atrium", "admin");
 
-    const introspected = await introspectByCookie(accessToken);
+    const introspected = await introspectAsApp(accessToken);
     expect(
       introspected.json(),
       "the same access token, unchanged, after POST /console/grants added admin",
@@ -381,7 +433,7 @@ describe("flow 1 — the console bootstraps the estate", () => {
   it("shows a grant revoked through the console disappearing on the very next introspection", async () => {
     await revokeRoleViaConsole(consoleCookie, subject, "atrium", "viewer");
 
-    const introspected = await introspectByCookie(accessToken);
+    const introspected = await introspectAsApp(accessToken);
     expect(
       introspected.json(),
       "the same access token, unchanged, after DELETE /console/grants removed viewer",
@@ -407,7 +459,7 @@ describe("flow 4 — disabling an account ends its live session end to end", () 
 
     const session = await loginAs("diana", PASSWORD, "203.0.113.20");
 
-    const before = await introspectByCookie(session.accessToken);
+    const before = await introspectAsApp(session.accessToken);
     expect(before.json(), "diana's freshly-minted token introspects live").toMatchObject({
       active: true,
     });
@@ -417,7 +469,7 @@ describe("flow 4 — disabling an account ends its live session end to end", () 
     // The signature is untouched — this is the same access token, byte for
     // byte, that just introspected active. Nothing expired and nothing was
     // revoked at the token layer; only `users.disabled_at` changed.
-    const after = await introspectByCookie(session.accessToken);
+    const after = await introspectAsApp(session.accessToken);
     expect(
       after.json(),
       "the SAME still-cryptographically-valid access token, after POST /console/accounts/:subject/disable",
@@ -445,7 +497,7 @@ describe("flow 5 — refresh rotation, and reuse killing the family, over real H
 
     const login = await loginAs("erin", PASSWORD, "203.0.113.30");
     expect(
-      (await introspectByCookie(login.accessToken)).json(),
+      (await introspectAsApp(login.accessToken)).json(),
       "erin's freshly-minted access token introspects live",
     ).toMatchObject({ active: true });
 
@@ -455,7 +507,7 @@ describe("flow 5 — refresh rotation, and reuse killing the family, over real H
     const secondAccessToken = cookieValue(first, mod.cookie.ACCESS_COOKIE_NAME)!;
     const secondRefreshToken = cookieValue(first, mod.cookie.REFRESH_COOKIE_NAME)!;
     expect(
-      (await introspectByCookie(secondAccessToken)).json(),
+      (await introspectAsApp(secondAccessToken)).json(),
       "the access token minted on rotation #1 introspects live",
     ).toMatchObject({ active: true });
 
@@ -477,7 +529,7 @@ describe("flow 5 — refresh rotation, and reuse killing the family, over real H
     expect(second.statusCode, "POST /refresh with R2 (second rotation)").toBe(200);
     const thirdAccessToken = cookieValue(second, mod.cookie.ACCESS_COOKIE_NAME)!;
     expect(
-      (await introspectByCookie(thirdAccessToken)).json(),
+      (await introspectAsApp(thirdAccessToken)).json(),
       "the access token minted on rotation #2 introspects live",
     ).toMatchObject({ active: true });
 
@@ -489,7 +541,7 @@ describe("flow 5 — refresh rotation, and reuse killing the family, over real H
     // The reuse alarm kills the WHOLE family — including R3, which was live
     // and legitimate a moment ago. This is the theft-response contract: a
     // stolen family dies in full rather than only the specific token reused.
-    const afterReplay = await introspectByCookie(thirdAccessToken);
+    const afterReplay = await introspectAsApp(thirdAccessToken);
     expect(
       afterReplay.json(),
       "the current, legitimately-rotated access token, after R1 was replayed",
@@ -512,8 +564,8 @@ describe("flow 6 — per-device revocation: the reason the sid claim exists", ()
     const laptop = await loginAs("frank", PASSWORD, "203.0.113.40");
     const phone = await loginAs("frank", PASSWORD, "203.0.113.41");
 
-    const laptopBefore = await introspectByCookie(laptop.accessToken);
-    const phoneBefore = await introspectByCookie(phone.accessToken);
+    const laptopBefore = await introspectAsApp(laptop.accessToken);
+    const phoneBefore = await introspectAsApp(phone.accessToken);
     expect(laptopBefore.json(), "the laptop's token, before any logout").toMatchObject({
       active: true,
     });
@@ -526,8 +578,8 @@ describe("flow 6 — per-device revocation: the reason the sid claim exists", ()
     const loggedOut = await logoutWith(laptop.refreshToken);
     expect(loggedOut.statusCode, "POST /logout with the laptop's refresh cookie").toBe(204);
 
-    const laptopAfter = await introspectByCookie(laptop.accessToken);
-    const phoneAfter = await introspectByCookie(phone.accessToken);
+    const laptopAfter = await introspectAsApp(laptop.accessToken);
+    const phoneAfter = await introspectAsApp(phone.accessToken);
 
     /**
      * **This is the one result the controller most needs to see.**
@@ -569,14 +621,13 @@ describe("flow 7 — the superuser console session cannot open an app, and an ap
     const byCookie = await app.inject({
       method: "POST",
       url: "/introspect",
-      headers: { cookie: cookieHeader({ [mod.superuser.CONSOLE_COOKIE_NAME]: consoleCookie }) },
+      headers: {
+        [mod.appKey.APP_KEY_HEADER]: estateAppKey,
+        cookie: cookieHeader({ [mod.superuser.CONSOLE_COOKIE_NAME]: consoleCookie }),
+      },
       payload: {},
     });
-    const byBody = await app.inject({
-      method: "POST",
-      url: "/introspect",
-      payload: { accessToken: consoleCookie },
-    });
+    const byBody = await introspectAsApp(consoleCookie);
 
     expect(byCookie.json(), "a real console token in the console cookie, to /introspect").toEqual({
       active: false,
@@ -606,7 +657,7 @@ describe("flow 7 — the superuser console session cannot open an app, and an ap
 
     // /introspect confirms the authority is real, before trying to abuse it.
     expect(
-      (await introspectByCookie(session.accessToken)).json(),
+      (await introspectAsApp(session.accessToken)).json(),
       "grace's token genuinely carries owner in three apps",
     ).toMatchObject({
       active: true,

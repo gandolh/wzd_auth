@@ -15,7 +15,7 @@
  *
  * ## What has always worked
  *
- * - **See my own grants** — `POST /ward-api/introspect` returns
+ * - **See my own grants** — `GET /ward-api/session` returns
  *   `{ active, subject, username, grants }` for the caller's own cookie.
  * - **Sign out of this device** — `POST /ward-api/logout` revokes the
  *   presented token's family and leaves the person's other devices alone.
@@ -75,7 +75,7 @@ export const CAN_RESEND_VERIFICATION: boolean = false;
 /**
  * `GET /ward-api/account`. See `getAccount` in `lib/api.ts`.
  *
- * `/introspect` answers with exactly four fields and a serialisation schema
+ * `/session` answers with exactly four fields and a serialisation schema
  * that makes adding a fifth impossible by accident — deliberately, so that a
  * future change cannot put `password_hash` or `email` on the wire to six apps
  * that have no use for them. That is the right call for the endpoint every app

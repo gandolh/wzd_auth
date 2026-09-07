@@ -28,7 +28,12 @@ export {
   hasGrant,
 } from "./session.js";
 
-export { WardAuthenticationError, WardForbiddenError, WardUnavailableError } from "./errors.js";
+export {
+  WardAuthenticationError,
+  WardConfigurationError,
+  WardForbiddenError,
+  WardUnavailableError,
+} from "./errors.js";
 
 export { readAccessCookie } from "./cookie.js";
 

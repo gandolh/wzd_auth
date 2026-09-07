@@ -69,12 +69,16 @@ beforeAll(async () => {
   // An account with as much authority as this estate can express: every role in
   // every app. It still cannot reach the console.
   subject = seedUser(db, "cristian").subject;
-  for (const row of listApps(db)) {
-    for (const role of ["user", "admin", "owner"]) {
+  const roles = ["user", "admin", "owner"];
+  const seeded = listApps(db);
+  for (const row of seeded) {
+    for (const role of roles) {
       grantRole(db, { subject, appSlug: row.slug, role, grantedBy: SUPERUSER_ACTOR });
     }
   }
-  expect(listGrantsForSubject(db, subject)).toHaveLength(9);
+  // Derived, not hardcoded — the point of the fixture is "every role in every
+  // app", and that should not need editing each time the estate gains one.
+  expect(listGrantsForSubject(db, subject)).toHaveLength(seeded.length * roles.length);
 
   const { mintAccessToken } = await import("../../tokens/service.js");
   ({ token: accessToken } = await mintAccessToken(subject, newFamilyId()));
@@ -160,8 +164,15 @@ it("refuses an ordinary account's real access token, however it is presented", a
 
   // And nothing happened. Not one app created, not one grant issued, not one
   // account made, not one audit row written.
-  expect(listApps(db).map((row) => row.slug)).toEqual(["atrium", "newspapper", "prm"]);
-  expect(listGrantsForSubject(db, subject)).toHaveLength(9);
+  expect(listApps(db).map((row) => row.slug)).toEqual([
+    "atrium",
+    "imbatranimos",
+    "newspapper",
+    "prm",
+    "sports-app",
+  ]);
+  // Unchanged from the fixture: the refused requests wrote nothing.
+  expect(listGrantsForSubject(db, subject)).toHaveLength(listApps(db).length * 3);
   expect(findUserByUsername(db, "intruder")).toBeUndefined();
   expect(listAudit(db)).toHaveLength(0);
 });

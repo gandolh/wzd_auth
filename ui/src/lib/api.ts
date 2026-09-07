@@ -258,7 +258,7 @@ export async function logout(): Promise<void> {
   await postJson<undefined>("/logout");
 }
 
-export interface IntrospectResult {
+export interface SessionResult {
   active: boolean;
   subject?: string;
   username?: string;
@@ -267,15 +267,22 @@ export interface IntrospectResult {
 }
 
 /**
- * `POST /ward-api/introspect`. **Always `200`**, even for a dead session — the
+ * `GET /ward-api/session`. **Always `200`**, even for a dead session — the
  * answer is in `active`, and there is deliberately no 4xx for a credential
  * problem, so `catch` here means the network broke and nothing else.
  *
  * This is the only endpoint that reads back a person's own grants, which is
  * what the self-service grants view is built on.
+ *
+ * **This used to be `POST /introspect`**, and the move is not cosmetic.
+ * `/introspect` now requires an `x-ward-app-key` header identifying the calling
+ * app, and a key embedded in this bundle would be a published secret rather
+ * than a credential — so the browser caller got its own cookie-authenticated
+ * route. The response shape is deliberately identical, which is why this is the
+ * only line in the UI that had to change.
  */
-export function introspect(): Promise<IntrospectResult> {
-  return postJson<IntrospectResult>("/introspect");
+export function readSessionState(): Promise<SessionResult> {
+  return request<SessionResult>("/session", { method: "GET" });
 }
 
 export interface RegisterInput {
@@ -321,12 +328,12 @@ export interface AccountResult {
 
 /**
  * `GET /ward-api/account` — the caller's own record, including the two fields
- * `/introspect` deliberately never carries: `email` and `emailVerified`.
+ * `/session` deliberately never carries: `email` and `emailVerified`.
  *
  * Cookie-authenticated the same way as the two mutations below — verify, then
  * `resolveSession` for liveness — so a **`401 unauthorized`** means the session
  * is dead, not that something broke. There is no statusless answer here the
- * way there is on `/introspect`: this is a person's own browser reading their
+ * way there is on `/session`: this is a person's own browser reading their
  * own record, and there is no third party for a status code to leak anything
  * to.
  */

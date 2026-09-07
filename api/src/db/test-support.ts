@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "./connection.js";
 import { runMigrations } from "./migrate.js";
 import { createApp } from "./apps.js";
+import { createAppKey } from "./app-keys.js";
 import { createUser, type UserRow } from "./users.js";
 
 /**
@@ -25,9 +26,17 @@ export function freshDb(): Database.Database {
   return db;
 }
 
-/** The estate's apps, as the cutover will seed them. `prm` is the open one. */
+/**
+ * The estate's apps, as the cutover will seed them. `prm` is the open one, and
+ * the only one — `decisions-accounts.md` is explicit that public registration
+ * is prm's alone.
+ *
+ * Slug order matters to callers that assert on `listApps`, which sorts by slug:
+ * `atrium`, `imbatranimos`, `newspapper`, `prm`, `sports-app`.
+ */
 export function seedApps(db: Database.Database): void {
   createApp(db, { slug: "atrium", name: "Atrium" });
+  createApp(db, { slug: "imbatranimos", name: "ImbatranimOS" });
   createApp(db, { slug: "newspapper", name: "Newspapper" });
   createApp(db, {
     slug: "prm",
@@ -35,6 +44,19 @@ export function seedApps(db: Database.Database): void {
     publicRegistration: true,
     baselineRole: "user",
   });
+  createApp(db, { slug: "sports-app", name: "Sports App" });
+}
+
+/**
+ * An app key for `appSlug`, returning the plaintext the way the console does —
+ * once, and never again.
+ *
+ * Every test that drives `POST /introspect` needs one, because the route now
+ * refuses an unkeyed caller before it does anything else. Tests that want to
+ * prove the refusal simply omit the header.
+ */
+export function seedAppKey(db: Database.Database, appSlug = "atrium"): string {
+  return createAppKey(db, { appSlug, label: `${appSlug} test key`, createdBy: "superuser" }).key;
 }
 
 /** An account with a throwaway password hash. */

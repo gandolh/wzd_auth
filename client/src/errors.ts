@@ -49,8 +49,48 @@ export class WardForbiddenError extends Error {
  * not signed in".
  */
 export class WardUnavailableError extends Error {
-  override readonly name = "WardUnavailableError";
+  /**
+   * Widened to `string` rather than left as the literal, because
+   * `WardConfigurationError` extends this class and must be able to name
+   * itself. Nothing branches on this value — `instanceof` is how both classes
+   * are told apart, and it keeps working across the subclass — so the literal
+   * bought nothing but the constraint.
+   */
+  override readonly name: string = "WardUnavailableError";
   readonly statusCode = 503;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+  }
+}
+
+/**
+ * Ward refused this app's key: `POST /introspect` answered `401`.
+ *
+ * A **subclass of `WardUnavailableError`**, deliberately. Every call site in
+ * this package and in every consuming app already fails closed on
+ * `WardUnavailableError`, and that behaviour is exactly right here — an app that
+ * cannot introspect must reject requests, not admit them — so making this a
+ * sibling would mean six apps each needing a new `catch` before the fix was
+ * safe. Subclassing means the safe behaviour is inherited and the extra
+ * information is available to whoever wants it.
+ *
+ * What it adds is diagnosability, which is the entire point. Every other reason
+ * for a failed introspection is transient and about Ward: a timeout, a restart,
+ * a 500. This one is permanent and about **this app's configuration** — its
+ * `WARD_APP_KEY` is absent, wrong, or has been revoked in Ward's console — and
+ * no amount of retrying or waiting will change it. Reading
+ * "introspect returned unexpected status 401" in a log at 3am, and having to
+ * work out that Ward is fine and it is your own deployment that is broken, is a
+ * bad half hour this class exists to prevent.
+ *
+ * Keeps `statusCode` 503: to the app's own callers this is still "the identity
+ * service is not usable from here", and a `401` passed through would tell a
+ * *user* they are not signed in when the truth is that the server is
+ * misconfigured.
+ */
+export class WardConfigurationError extends WardUnavailableError {
+  override readonly name = "WardConfigurationError";
 
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);

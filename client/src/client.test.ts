@@ -5,6 +5,13 @@ import { WardAuthenticationError, WardForbiddenError, WardUnavailableError } fro
 import { startFakeWard, type FakeWard } from "./testing/fakeWard.js";
 
 /**
+ * The app key every client in this file presents. Ward refuses `/introspect`
+ * without one, so a fixture that omitted it would be testing a call the real
+ * service never answers.
+ */
+const TEST_APP_KEY = "wak_test_key_for_this_suite";
+
+/**
  * The end-to-end surface: cookie in, resolved identity and authority out (or
  * a thrown, typed error). This is what `./fastify` and any other framework
  * layer is built on.
@@ -26,6 +33,7 @@ function client(overrides: Partial<Parameters<typeof createWardClient>[0]> = {})
     apiBasePath: "",
     jwksEndpoint: ward.jwksEndpoint,
     introspectEndpoint: ward.introspectEndpoint,
+    appKey: TEST_APP_KEY,
     ...overrides,
   });
 }

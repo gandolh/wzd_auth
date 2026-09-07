@@ -42,7 +42,7 @@ import "./ward.css";
  *
  * ## Why the entry route is the login page
  *
- * `/ward` alone lands on `/ward/login`. The alternative — introspect, then
+ * `/ward` alone lands on `/ward/login`. The alternative — read the session, then
  * choose between the account page and the login form — costs a request on the
  * one path that has to be fast, and gets it wrong for the overwhelmingly
  * common case, which is somebody arriving here because an app sent them.
